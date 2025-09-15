@@ -17,7 +17,7 @@ The dashboard allows users to visualize PFAS concentrations in surface water, pu
 
 ## Dashboard 🖥️
 🔗 **[View the Live Dashboard Here](#)**  
-*(This link will be replaced with the actual GitHub Pages URL once available.)*
+*(View once ready)*
 
 ---
 
@@ -27,7 +27,7 @@ The dashboard allows users to visualize PFAS concentrations in surface water, pu
 - 💧 Visualizations of PFAS levels in municipal drinking water
 - 📊 Searchable tables and downloadable data
 - 👥 User-friendly design to support researchers, policymakers, and the general public
-
+*(To update with actual viasualizations)*
 ---
 
 ## Data Source 📂
@@ -120,8 +120,8 @@ This project uses publicly available PFAS datasets provided by the **Michigan De
 ---
 
 ## Technologies Used 🛠️
-- **Frontend:** Quarto, Leaflet, Plotly (planned)
-- **Backend:** R
+- **Frontend:** Leaflet, Plotly (To update with actuals)
+- **Backend:** R, Quarto, Markdown
 - **Hosting:** GitHub Pages
 
 ---
