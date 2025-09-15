@@ -1,126 +1,136 @@
-# Michigan PFAS Data
+# Michigan PFAS Data Dashboard 🧪🌊
 
-## Description  
-
-From the state of Michigan's website:  
-
-PFAS are a large group of man-made chemicals that include **perfluorooctanoic acid (PFOA)** and **perfluorooctanesulfonic acid (PFOS)**. PFAS have been used globally during the past century in manufacturing, firefighting, and thousands of common household and consumer products. These chemicals are persistent in the environment and in the human body — meaning they don't break down and can accumulate over time.  
-
-In recent years, experts have become increasingly concerned about the potential effects of high concentrations of PFAS on human health.  
-
-PFAS contamination in West Michigan has unfortunately made headlines, reminiscent of other environmental advocacy efforts like that of renowned whistleblower Erin Brockovich.  
+![GitHub last commit](https://img.shields.io/github/last-commit/Nancy-Odhiambo/Michigan-PFAS-Data)
+![GitHub issues](https://img.shields.io/github/issues/Nancy-Odhiambo/Michigan-PFAS-Data)
+![GitHub license](https://img.shields.io/github/license/Nancy-Odhiambo/Michigan-PFAS-Data)
 
 ---
 
-There are multiple PFAS-related data sets available from the state of Michigan contained in a single zipped file:  
-➡️ [pfas_data.zip](https://github.com/dilernia/STA418-518/blob/main/Data/pfas_data.zip)  
+## Introduction 📖
+Per- and polyfluoroalkyl substances (PFAS) are a large group of man-made chemicals, including perfluorooctanoic acid (PFOA) and perfluorooctanesulfonic acid (PFOS). These chemicals have been widely used in manufacturing, firefighting, and consumer products. Because PFAS are highly persistent in the environment and in the human body, they can accumulate over time and pose potential health risks.
 
-Datasets included:  
-- **Surface water sampling data**: PFAS concentrations in surface water samples 🏞🐟  
-- **Public water supply sampling data**: PFAS concentrations in municipal drinking water samples 💧  
-- **PFAS sites data**: PFAS contamination or investigation sites ☢️  
+PFAS contamination in Michigan has raised significant public health and environmental concerns, echoing past environmental advocacy efforts such as those led by Erin Brockovich. This project aims to make PFAS-related data more accessible and easier to explore through an interactive dashboard.
 
-Additional resources:  
-- [Surface water data dictionary](https://gis-egle.hub.arcgis.com/datasets/egle::pfas-surface-water-sampling/about)  
-- [Minimum Laboratory Analyte List (EGLE, HHS, MDARD, DNR)](https://www.michigan.gov/pfasresponse/-/media/Project/Websites/PFAS-Response/Sampling-Guidance/Minimum-Laboratory-Analyte-List.pdf?rev=a35aba56ec5a4922b986f01e25c1a19d&hash=04E6F164AA5F5CD29B83B39983341345)  
+The dashboard allows users to visualize PFAS concentrations in surface water, public water supplies, and known contamination sites across Michigan. By improving access to PFAS data, we hope to support research, policy discussions, and public awareness.
 
 ---
 
-## Source  
-
-Data was obtained from the [State of Michigan GIS Hub](https://gis-egle.hub.arcgis.com/search?q=pfasgis).  
-
----
-
-## Data Dictionary  
-
-### Surface Water Sampling Data  
-
-| Variable                | Description                                                                 |
-|--------------------------|-----------------------------------------------------------------------------|
-| geoid                   | Geographic region ID (first 2 digits = state FIPS, last 3 digits = county) |
-| longitude               | Longitude coordinate of sampling location                                   |
-| latitude                | Latitude coordinate of sampling location                                    |
-| lab_sample_id           | Sample ID provided by the analytical laboratory                            |
-| site_code               | Sampling location name                                                      |
-| coc_sample_id           | Chain-of-custody sample ID provided to laboratory                          |
-| sample_type             | Description of sample type collected                                       |
-| lab_name                | Analytical laboratory name                                                  |
-| lab_job_name            | Analytical laboratory job/work order name                                   |
-| collection_date         | Date sample was collected                                                   |
-| analysis_method         | Method used by laboratory for analysis                                      |
-| dilution_factor         | Dilution factor applied during sample prep                                 |
-| analysis_date           | Date laboratory conducted analysis                                          |
-| duplicate               | Duplicate sample description                                               |
-| watershed               | Watershed of collection site                                                |
-| waterbody               | Waterbody of collection site                                                |
-| location_code           | Sampling location code                                                      |
-| huc10                   | 10-digit hydrological unit code                                             |
-| huc8                    | 8-digit hydrological unit code                                              |
-| project                 | Associated project name                                                     |
-| description             | Description of sampling location                                            |
-| additional_description  | Additional details of sampling location                                     |
-| visit_id                | Sampling event ID                                                           |
-| sample_depth            | Depth at which sample was collected                                         |
-| analyte                 | PFAS analyte name                                                           |
-| analyte_value           | PFAS analyte concentration (parts per trillion, ppt or ng/L)               |  
+## Dashboard 🖥️
+🔗 **[View the Live Dashboard Here](#)**  
+*(This link will be replaced with the actual GitHub Pages URL once available.)*
 
 ---
 
-### Public Water Supply Sampling Data  
-
-From EGLE:  
-
-The dataset includes information from both the State of Michigan–funded PFAS drinking water sampling effort and ongoing compliance monitoring. Each location may have multiple samples across different dates.  
-
-| Variable        | Description                                                                 |
-|-----------------|-----------------------------------------------------------------------------|
-| geoid           | Geographic region ID (FIPS: state + county)                                |
-| longitude       | Longitude of sampling location                                              |
-| latitude        | Latitude of sampling location                                               |
-| system_name     | Water supply system name                                                   |
-| system_type     | Water supply system type                                                   |
-| sample_date     | Date of sample collection                                                  |
-| lab_name_code   | Processing lab code                                                        |
-| analyte         | PFAS analyte                                                               |
-| analyte_value   | PFAS analyte concentration (ppt or ng/L)                                   |  
+## Key Features ✨
+- 🗺️ Interactive maps showing PFAS contamination sites across Michigan
+- 🌊 Visualizations of PFAS concentrations in surface water
+- 💧 Visualizations of PFAS levels in municipal drinking water
+- 📊 Searchable tables and downloadable data
+- 👥 User-friendly design to support researchers, policymakers, and the general public
 
 ---
 
-### PFAS Sites  
+## Data Source 📂
+This project uses publicly available PFAS datasets provided by the **Michigan Department of Environment, Great Lakes, and Energy (EGLE)** and the **Michigan PFAS Action Response Team (MPART)**.
 
-_Last updated: 02/05/2025_  
-_Downloaded: 02/25/2025_  
+- [Surface Water Sampling Data](https://gis-egle.hub.arcgis.com/datasets/egle::pfas-surface-water-sampling/about)
+- [Public Water Supply Sampling Data](https://gis-egle.hub.arcgis.com/search?q=pfasgis)
+- [Michigan PFAS Sites Data](https://gis-egle.hub.arcgis.com/datasets/egle::michigan-pfas-sites/about)
+- [PFAS Laboratory Analyte List (PDF)](https://www.michigan.gov/pfasresponse/-/media/Project/Websites/PFAS-Response/Sampling-Guidance/Minimum-Laboratory-Analyte-List.pdf?rev=a35aba56ec5a4922b986f01e25c1a19d&hash=04E6F164AA5F5CD29B83B39983341345)
 
-➡️ Cleaned CSV: [pfas_sites.csv](https://raw.githubusercontent.com/dilernia/STA418-518/refs/heads/main/Data/pfas_sites.csv)  
+<details>
+<summary>📝 Surface Water Sampling Data Dictionary</summary>
 
-From EGLE: The Michigan PFAS Sites layer is the official list of PFAS sites in the state. Data is updated as new PFAS sites are identified.  
+| Variable | Description |
+|----------|-------------|
+| geoid | Geographic region ID (first 2 digits = state FIPS, last 3 = county FIPS) |
+| longitude | Longitude of sampling location |
+| latitude | Latitude of sampling location |
+| lab_sample_id | Sample ID provided by analytical laboratory |
+| site_code | Sampling location name |
+| coc_sample_id | Sample ID listed on chain of custody |
+| sample_type | Expanded description of type of sample collected |
+| lab_name | Name of analytical laboratory |
+| lab_job_name | Analytical laboratory's job/work order name |
+| collection_date | Date sample was collected |
+| analysis_method | Analysis method used |
+| dilution_factor | Dilution factor used during sample prep |
+| analysis_date | Date analysis was conducted |
+| duplicate | Description of duplicate sample |
+| watershed | Watershed sample collected from |
+| waterbody | Waterbody sample collected from |
+| location_code | Sampling location code |
+| huc10 | 10-digit hydrological unit code |
+| huc8 | 8-digit hydrological unit code |
+| project | Associated project |
+| description | Description of sampling location |
+| additional_description | Additional description of sampling location |
+| visit_id | ID of sampling event |
+| sample_depth | Sampling depth |
+| analyte | PFAS analyte |
+| analyte_value | Analyte concentration (ppt/ng/L) |
 
-| Variable                   | Type     | Description                                                                 |
-|-----------------------------|----------|-----------------------------------------------------------------------------|
-| geoid                      | double   | Geographic region ID (FIPS: state + county)                                |
-| longitude                  | double   | Longitude coordinate of sample location                                    |
-| latitude                   | double   | Latitude coordinate of sample location                                     |
-| facility                   | character| Name of the site                                                            |
-| county                     | character| County name                                                                |
-| address                    | character| Physical address of project site                                           |
-| city                       | character| City of site location                                                      |
-| zip_code                   | double   | Zip code of site                                                           |
-| type                       | character| Type of site                                                               |
-| residential_wells_sampled  | character| Whether residential wells were/are sampled (Yes/No/TBD/N/A)                |
-| site_lead                  | character| Site contact person                                                         |
-| site_lead_email            | character| Site contact email                                                          |
-| site_lead_phone            | character| Site contact phone                                                          |
-| hyperlink                  | character| URL to investigation summary                                               |
-| location                   | character| Geographic location description                                            |
-| military                   | character| Whether site is military-related                                           |
-| facility_date              | character| Date site published on MPART website                                       |
-| site_background            | character| Background information                                                     |
-| drinking_water_information | character| Drinking water safety information                                          |
-| anticipated_activities     | character| Planned or upcoming state activities                                       |  
+</details>
+
+<details>
+<summary>💧 Public Water Supply Sampling Data Dictionary</summary>
+
+| Variable | Description |
+|----------|-------------|
+| geoid | Geographic region ID (state + county FIPS) |
+| longitude | Longitude of sampling location |
+| latitude | Latitude of sampling location |
+| system_name | Name of water supply system |
+| system_type | Type of water supply system |
+| sample_date | Date sample was collected |
+| lab_name_code | Code for processing lab |
+| analyte | PFAS analyte |
+| analyte_value | Analyte concentration (ppt/ng/L) |
+
+</details>
+
+<details>
+<summary>☢️ PFAS Sites Data Dictionary</summary>
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| geoid | double | Geographic region ID (state + county FIPS) |
+| longitude | double | Longitude of sample location |
+| latitude | double | Latitude of sample location |
+| facility | character | Name of site |
+| county | character | County of site |
+| address | character | Physical address of site |
+| city | character | City of site |
+| zip_code | double | Zip code of site |
+| type | character | Kind of site |
+| residential_wells_sampled | character | Indicates if residential wells sampled (Yes/No/TBD/N/A) |
+| site_lead | character | Contact person |
+| site_lead_email | character | Contact email |
+| site_lead_phone | character | Contact phone |
+| hyperlink | character | Web link to site investigation summary |
+| location | character | Geographic location description |
+| military | character | Indicates if site is associated with military |
+| facility_date | character | Date site published on MPART website |
+| site_background | character | Background info on site |
+| drinking_water_information | character | Info about drinking water quality and safety |
+| anticipated_activities | character | Planned or upcoming state activities |
+
+</details>
 
 ---
 
-## License  
+## Technologies Used 🛠️
+- **Frontend:** Quarto, Leaflet, Plotly (planned)
+- **Backend:** R
+- **Hosting:** GitHub Pages
 
-This project is released under the **xxxx**.  
+---
+
+## Attribution & Licensing 📜
+- **Data Providers:** Michigan Department of Environment, Great Lakes, and Energy (EGLE); Michigan PFAS Action Response Team (MPART)  
+  *Note: This dashboard is an independent project and is not affiliated with or endorsed by MPART or the State of Michigan.*
+
+- **Project License:** The code for this project is licensed under the [MIT License](LICENSE)
+
+- **Acknowledgments:** This project was created by **Nancy Odhiambo** as part of a Master's Graduate Research Assistantship in the **Department of Statistics, Grand Valley State University**.  
+  Faculty Mentor: **Dr. Andrew DiLernia**
