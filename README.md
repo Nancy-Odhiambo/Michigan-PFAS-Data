@@ -35,7 +35,7 @@ This project uses publicly available PFAS datasets provided by the **Michigan De
 
 - [Surface Water Sampling Data](https://gis-egle.hub.arcgis.com/datasets/egle::pfas-surface-water-sampling/about)
 - [Public Water Supply Sampling Data](https://gis-egle.hub.arcgis.com/search?q=pfasgis)
-- [Michigan PFAS Sites Data](https://gis-egle.hub.arcgis.com/datasets/egle::michigan-pfas-sites/about)
+- [Michigan PFAS Sites Data](https://www.michigan.gov/pfasresponse/investigations/sites-aoi)
 - [PFAS Laboratory Analyte List (PDF)](https://www.michigan.gov/pfasresponse/-/media/Project/Websites/PFAS-Response/Sampling-Guidance/Minimum-Laboratory-Analyte-List.pdf?rev=a35aba56ec5a4922b986f01e25c1a19d&hash=04E6F164AA5F5CD29B83B39983341345)
 
 <details>
