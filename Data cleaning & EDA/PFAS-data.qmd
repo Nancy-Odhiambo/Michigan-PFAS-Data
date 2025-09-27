@@ -159,6 +159,12 @@ public_water_long <- public_water_wide |>
 write_csv(public_water_long, file = "pfas_public_water_long.csv")
 ```
 
+```{r}
+getwd()
+list.files()
+list.files("Public_Water_Supply_Sampling_Hexbins_and_Results")
+```
+
 ```{r PFAS_sites_import}
 #| eval: true
 #| include: false
@@ -376,4 +382,47 @@ pfas_sites_descriptions <- c(
 # Printing data dictionary
 pfas_sites |> 
   data_dictionary(descripts = pfas_sites_descriptions)
+```
+
+```{r}
+library(skimr)
+# Exploring the data set using skim package
+# Surface water dataset
+skim(surface_water_long)
+
+```
+```{r}
+# Public water supply dataset
+skim(public_water_long)
+```
+
+```{r}
+# PFAS sites dataset
+skim(pfas_sites)
+
+```
+
+Exploring Missingness in data sets
+
+```{r}
+library(naniar)
+
+# % Missingness in surafce water data
+gg_miss_var(surface_water_long, show_pct = TRUE) +
+  labs(title = "Missingness by Variable: PFAS Surface Water Data")
+
+# % Missingness in public water
+gg_miss_var(public_water_long, show_pct = TRUE) +
+  labs(title = "Missingness by Variable: PFAS Public Water Data")
+
+# % Missingness in PFAS sites
+gg_miss_var(pfas_sites, show_pct = TRUE) +
+  labs(title = "Missingness by Variable: PFAS sites Data")
+
+```
+
+ Exploratory Data Analysis
+```{r}
+# Exploratory Data Analysis
+
 ```
