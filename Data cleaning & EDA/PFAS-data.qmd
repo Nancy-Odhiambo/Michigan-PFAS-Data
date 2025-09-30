@@ -159,11 +159,6 @@ public_water_long <- public_water_wide |>
 write_csv(public_water_long, file = "pfas_public_water_long.csv")
 ```
 
-```{r}
-getwd()
-list.files()
-list.files("Public_Water_Supply_Sampling_Hexbins_and_Results")
-```
 
 ```{r PFAS_sites_import}
 #| eval: true
@@ -404,7 +399,7 @@ skim(pfas_sites)
 
 Exploring Missingness in data sets and Exploartory Data Analysis
 
-```{r}
+```{r, warning=FALSE}
 library(tidyverse)   
 library(sf)
 library(patchwork)
@@ -413,10 +408,10 @@ library(naniar)
 library(skimr)
 library(ggrepel)
 library(ggthemes)
-library(viridis)
 library(scales)
 library(reshape2)
 library(ggcorrplot)
+library(flextable)
 ```
 
 ```{r}
@@ -449,6 +444,24 @@ Exploratory Data Analysis
 
 ```{r}
 # Bar plots showing the surface water PFAS concentration by top and bottom 15 counties
+# Load county shapefile
+counties_sf <- st_read("cb_2018_us_county_500k.shp") |>
+  st_drop_geometry() |>
+  select(GEOID, NAME)
+# Aggregate mean PFAS by county
+pfas_county_summary <- surface_water_long |>
+  group_by(geoid) |>
+  summarize(mean_value = mean(analyte_value, na.rm = TRUE)) |>
+  ungroup() |>
+  left_join(counties_sf, by = c("geoid" = "GEOID")) |>
+  rename(NAME = NAME)
+# Top 15 counties
+top15 <- pfas_county_summary |> slice_max(mean_value, n = 15) |> mutate(group = "Top 15")
+# Bottom 15 counties
+bottom15 <- pfas_county_summary |> slice_min(mean_value, n = 15) |> mutate(group = "Bottom 15")
+# Combine
+pfas_top_bottom <- bind_rows(top15, bottom15)
+
 ggplot(pfas_top_bottom, aes(x = fct_reorder(NAME, mean_value), 
                             y = mean_value, 
                             fill = group)) +
@@ -514,23 +527,25 @@ surface_water_long |>
 
 ```{r}
 # Map of average surface water PFAS by county
-public_county_map <- surface_water_long |>
+# Load county shapefile
+mi_counties <- st_read("cb_2018_us_county_500k.shp") |>
+  filter(STATEFP == "26")   
+
+# Aggregate public water PFAS by county
+public_county_map <- public_water_long |>
   group_by(geoid) |>
-  summarize(mean_value = mean(analyte_value, na.rm = TRUE)) |>
-  ungroup() |>
+  summarize(mean_value = mean(analyte_value, na.rm = TRUE), .groups = "drop") |>
   left_join(mi_counties, by = c("geoid" = "GEOID")) |>
   st_as_sf()
 
-# Choropleth plot
 ggplot(public_county_map) +
   geom_sf(aes(fill = mean_value), color = "white") +
   scale_fill_viridis_c(option = "magma", na.value = "grey90") +
   labs(
-    title = "Mean PFAS Concentration in Surface Water by County",
-    x = "Longitude",
-    y = "Latitude",
+    title = "Mean PFAS Concentration in Public Water by County",
     fill = "Mean PFAS (ng/L)",
-    caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE") +
+    caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
+  ) +
   theme_minimal()
 
 ```
@@ -564,7 +579,7 @@ ggplot(public_water_top10, aes(x = fct_reorder(system_name, mean_value), y = mea
     axis.title = element_text(face = "bold"),
     legend.position = "none"
   ) +
-  expand_limits(y = max(public_water_top20$mean_value) * 1.1)  
+  expand_limits(y = max(public_water_top10$mean_value) * 1.1)  
 
 ```
 
@@ -659,18 +674,19 @@ ggplot(sites_top10_counties, aes(x = fct_reorder(county, n), y = n, fill = n)) +
 
 
 ```{r}
-# Convert to spatial points
+# Map of PFAS sites across Michigan
 pfas_sites_sf <- pfas_sites |>
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
-
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |>
+  mutate(type = str_replace_all(type, "mlitary", "military"),
+         type = str_to_title(type)) 
 ggplot() +
   geom_sf(data = mi_counties, fill = "grey90", color = "white") +
-  geom_sf(data = pfas_sites_sf, aes(color = type), size = 2, alpha = 0.7) +
+  geom_sf(data = pfas_sites_sf, aes(color = type), size = 1.5, alpha = 0.7) +
   scale_color_viridis_d() +
   labs(
     title = "PFAS Sites Across Michigan",
     color = "Site Type",
-    caption = "Data source: MPART, EGLE"
+    caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
   ) +
   theme_minimal()
 ```
@@ -695,28 +711,88 @@ pfas_sites |>
     x = "Site Type",
     y = "Number of Sites",
     fill = "Count",
-    caption = "Data source: MPART, EGLE"
+    caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
   ) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "none")
 ```
-*Combined Exploratory Data Analysis*
-```{r}
-# Surface water
-surface_water_long |>
-  pull(collection_date) |>
-  unique() |> 
-  sort() |> 
-  head(20)
 
-# Public water
-public_water_long |>
-  pull(sample_date) |>
-  unique() |> 
-  sort() |> 
-  head(20)
+*Combined Exploratory Data Analysis*
+
+```{r}
+# Aggregate surface water PFAS by county
+surface_county <- surface_water_long |>
+  group_by(geoid) |>
+  summarize(mean_surface = mean(analyte_value, na.rm = TRUE),
+            n_surface_samples = n()) |>
+  ungroup()
+
+# Aggregate public water PFAS by county
+public_county <- public_water_long |>
+  group_by(geoid) |>
+  summarize(mean_public = mean(analyte_value, na.rm = TRUE),
+            n_public_samples = n()) |>
+  ungroup()
+
+# Aggregate PFAS sites count by county
+sites_county <- pfas_sites |>
+  group_by(geoid) |>
+  summarize(n_sites = n()) |>
+  ungroup()
 
 ```
 
 
+```{r, warning=FALSE}
+# County shapefile
+counties_sf <- st_read("cb_2018_us_county_500k.shp") |>
+  st_drop_geometry() |>
+  select(GEOID, NAME)
+# Converting geoid to character
+surface_county <- surface_county |> mutate(geoid = as.character(geoid))
+public_county  <- public_county  |> mutate(geoid = as.character(geoid))
+sites_county   <- sites_county   |> mutate(geoid = as.character(geoid))
+# Joining data sets
+county_combined <- surface_county |>
+  full_join(public_county, by = "geoid") |>
+  full_join(sites_county, by = "geoid")
+# Summary tables
+county_summary <- county_combined |>
+  left_join(counties_sf, by = c("geoid" = "GEOID")) |>
+  relocate(NAME, .before = geoid) |>
+  select(NAME, mean_surface, n_surface_samples, mean_public, n_public_samples, n_sites) |>
+  arrange(desc(mean_surface))
+# Flextable for first 10 counties
+top10_county_table <- county_summary |> slice_head(n = 10)
+flextable(top10_county_table) |> autofit()
+# Faceted bar for the top 10 counties
+county_long <- top10_county_table |>
+  pivot_longer(cols = c(mean_surface, mean_public, n_sites),
+               names_to = "metric", values_to = "value") |>
+  group_by(metric) |>
+  mutate(NAME = reorder(NAME, value)) |>
+  ungroup()
+# Custom y-axis labels for each metric
+metric_labels <- c(
+  mean_surface = "Mean Surface PFAS (ng/L)",
+  mean_public = "Mean Public PFAS (ng/L)",
+  n_sites = "Number of PFAS Sites")
+county_long |>
+  ggplot(aes(x = NAME, y = value, fill = metric)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = round(value, 2)), 
+            hjust = -0.1, size = 4, color = "black") +
+  facet_wrap(~ metric, scales = "free_y", labeller = labeller(metric = metric_labels)) +
+  coord_flip(clip = "off") +  
+  scale_fill_manual(values = c("steelblue", "tomato", "darkgreen")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)), breaks = NULL) + 
+  labs(x = "County",
+       y = NULL,  # removing the y-axis title
+       title = "Top 10 Counties by Metric: Surface & Public PFAS and Number of Sites",
+       caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE") +
+  theme_minimal() |>
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        plot.caption = element_text(size = 10, face = "bold"),
+        axis.text.y = element_text(face = "bold"))
+```
 
