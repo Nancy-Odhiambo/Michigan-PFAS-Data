@@ -1,4 +1,4 @@
-# Michigan PFAS Data Dashboard 🧪🌊
+# Michigan PFAS Dashboard 🧪🌊
 
 ![GitHub last commit](https://img.shields.io/github/last-commit/Nancy-Odhiambo/Michigan-PFAS-Data)
 ![GitHub issues](https://img.shields.io/github/issues/Nancy-Odhiambo/Michigan-PFAS-Data)
