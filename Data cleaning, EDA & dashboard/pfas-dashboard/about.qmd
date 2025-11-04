@@ -1,0 +1,9 @@
+## Attribution & Licensing 📜  
+- **Data Providers:** Michigan Department of Environment, Great Lakes, and Energy (EGLE); Michigan PFAS Action Response Team (MPART)  
+  *Note: This dashboard is an independent project and is not affiliated with or endorsed by MPART or the State of Michigan.*  
+
+- **Project License:** The code for this project is licensed under the [MIT License](LICENSE).  
+
+- **Acknowledgments:**  
+  This project was created by **Nancy Odhiambo** as part of a Master's Graduate Research Assistantship in the **Department of Statistics, Grand Valley State University**.  
+  Faculty Mentor: **Dr. Andrew DiLernia**  

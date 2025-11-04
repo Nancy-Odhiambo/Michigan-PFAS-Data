@@ -1,0 +1,31 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Michigan PFAS Dashboard"
+  navbar:
+    background: primary
+    pinned: true
+    collapse: true
+    left: []  # keep left empty
+    right:
+      - text: "Project Overview"
+        href: index.html       # rendered from index.qmd
+      - text: "PFAS Concentrations"
+        href: PFAS-data.qmd
+      - text: "Hazard Analysis"
+        href: 02-analysis.qmd
+      - text: "About"
+        href: about.qmd
+
+  page-footer:
+    center: "© 2025 Nancy Odhiambo | Michigan PFAS Dashboard Project"
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+    toc-depth: 2
+    page-layout: full
