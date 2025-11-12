@@ -1,3 +1,17 @@
+---
+title: "Attributions and Licencing"
+format:
+  dashboard:
+    orientation: rows   
+    theme: flatly          
+    toc: true              
+    self-contained: true   
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true
+---
 ## Attribution & Licensing 📜  
 - **Data Providers:** Michigan Department of Environment, Great Lakes, and Energy (EGLE); Michigan PFAS Action Response Team (MPART)  
   *Note: This dashboard is an independent project and is not affiliated with or endorsed by MPART or the State of Michigan.*  

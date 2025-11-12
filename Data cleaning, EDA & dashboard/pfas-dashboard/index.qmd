@@ -1,43 +1,42 @@
-# Project Overview 🧭  
-This project presents the **Michigan PFAS Dashboard**, an interactive data visualization tool that explores PFAS (Per- and Polyfluoroalkyl Substances) contamination across Michigan.  
-
-Built with **R** and **Quarto**, the dashboard combines data from surface water, public water supplies, and known contamination sites to support environmental research and policy decision-making.
-
+---
+title: "PFAS Project Description"
+format:
+  dashboard:
+    orientation: rows   
+    theme: flatly           
+    toc: true              
+    self-contained: true   
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true
 ---
 
-## Introduction 📖  
-Per- and polyfluoroalkyl substances (PFAS) are a large group of man-made chemicals, including perfluorooctanoic acid (PFOA) and perfluorooctanesulfonic acid (PFOS). These chemicals have been widely used in manufacturing, firefighting, and consumer products.  
+**Project Overview 🧭**  
+This project presents the *Michigan PFAS Dashboard*, an interactive data visualization tool that explores PFAS (*Per- and Polyfluoroalkyl Substances*) contamination across Michigan built with *R* and *Quarto*. The dashboard combines data from surface water, public water supplies, and known contamination sites to support environmental research and policy decision-making.
 
-Because PFAS are highly persistent in the environment and in the human body, they can accumulate over time and pose potential health risks.  
+**Introduction 📖**
 
-PFAS contamination in Michigan has raised significant public health and environmental concerns, echoing past environmental advocacy efforts such as those led by Erin Brockovich.  
+Per- and polyfluoroalkyl substances (PFAS) are a large group of man-made chemicals, including perfluorooctanoic acid (PFOA) and perfluorooctanesulfonic acid (PFOS). These chemicals have been widely used in manufacturing, firefighting, and consumer products.  Because PFAS are highly persistent in the environment and in the human body, they can accumulate over time and pose potential health risks.PFAS contamination in Michigan has raised significant public health and environmental concerns, echoing past environmental advocacy efforts such as those led by Erin Brockovich. 
 
-This project aims to make PFAS-related data more accessible and easier to explore through an **interactive dashboard**.  
+**Motivations Towards Development**
 
-The dashboard allows users to visualize PFAS concentrations in surface water, public water supplies, and known contamination sites across Michigan. By improving access to PFAS data, the dashboard supports **research, policy discussions, and public awareness**.
+- *To make PFAS-related data more accessible and easier to explore through an interactive dashboard*
+- *Allow users to visualize PFAS concentrations in surface water, public water supplies, and known contamination sites across Michigan*
+- *Support research, policy discussions, and public awareness*
+- *Serves as both an analytical and educational tool, designed to help users understand the scope and implications of PFAS contamination in Michigan*
+- *Inform policy decisions around PFAS contamination in Michigan*
 
----
+**Key Features of the Dashboard ✨** 
+- 🗺️ *Interactive map** showing PFAS contamination sites across Michigan  
+- 🌊 *Visualizations* of PFAS concentrations in surface water  
+- 💧 *Charts* of PFAS levels in municipal drinking water  
+- 📊 *Searchable tables* and *downloadable data*  
+- ☣️ *Hazard Index Exploration* to assess potential health risks based on PFAS exposure  
+- 👥 *User-friendly design* to support researchers, policymakers, and the general public  
 
-## Project Summary 🔍  
-This section outlines the **workflow** that integrates and cleans multiple PFAS datasets, applies geospatial identifiers, and visualizes contamination patterns.  
-
-The dashboard serves as both an **analytical** and **educational** tool, designed to help users understand the scope and implications of PFAS contamination in Michigan.
-
----
-
-## Key Features of the Dashboard ✨  
-- 🗺️ **Interactive maps** showing PFAS contamination sites across Michigan  
-- 🌊 **Visualizations** of PFAS concentrations in surface water  
-- 💧 **Charts** of PFAS levels in municipal drinking water  
-- 📊 **Searchable tables** and **downloadable data**  
-- ☣️ **Hazard Index Exploration** to assess potential health risks based on PFAS exposure  
-- 👥 **User-friendly design** to support researchers, policymakers, and the general public  
-
----
-
-## Technologies Used 🛠️  
-- **Frontend:** Leaflet, Plotly 
-- **Backend:** R, Quarto, Markdown  
-- **Hosting:** GitHub Pages  
-
----
+**Technologies Used 🛠️**  
+- *Frontend:* Leaflet, Plotly 
+- *Backend:* R, Quarto, Markdown  
+- *Hosting:* GitHub Pages  

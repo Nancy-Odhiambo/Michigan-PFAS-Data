@@ -8,10 +8,10 @@ website:
     background: primary
     pinned: true
     collapse: true
-    left: []  # keep left empty
+    left: []
     right:
       - text: "Project Overview"
-        href: index.html       # rendered from index.qmd
+        href: index.html
       - text: "PFAS Concentrations"
         href: PFAS-data.qmd
       - text: "Hazard Analysis"
@@ -26,6 +26,6 @@ format:
   html:
     theme: cosmo
     css: styles.css
-    toc: true
-    toc-depth: 2
+    toc: true       # enables Table of Contents sidebar for PFAS-data.qmd
+    toc-depth: 2    # shows ## and ### headers
     page-layout: full

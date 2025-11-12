@@ -1,15 +1,16 @@
 ---
-title: "Michigan PFAS Data"
+title: "Public Water Hazard Index Analysis"
 format:
-  html:
-    toc: true
-    self-contained: true
-    embed-resources: true
+  dashboard:
+    orientation: columns  
+    theme: flatly            
+    toc: true              
+    self-contained: true   
 execute:
-  echo: false  # Do not show code
-  warning: false  # Suppress warnings
-  message: false  # Suppress messages
-  output: true  # Show output
+  echo: false
+  warning: false
+  message: false
+  output: true
 ---
 
 ```{r}
@@ -192,47 +193,6 @@ write_csv(pfas_sites, file = pfas_site_path)
 ```
 
 ```{r}
-skim(pfas_sites)
-```
-
-```{r}
-skim(surface_water_long)
-```
-
-```{r}
-skim(public_water_wide)
-```
-
-```{r}
-glimpse(public_water_wide)
-```
-
-```{r}
-# % Missingness in surafce water data
-gg_miss_var(surface_water_long, show_pct = TRUE) +
-  labs(title = "Missingness by Variable: PFAS Surface Water Data",
-       caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE",
-       x = "Variable Name",
-       y = "% Missingness")
-
-# % Missingness in focus columns of public water data set
-gg_miss_var(public_water_wide |> 
-    select(hex_id, PFOAResult, PFOSResult, PFNAResult, PFHxSResult, PFBSResult, HFPODAResult, PFHxAResult),
-  show_pct = TRUE) +
-  labs(title = "Missingness: Key PFAS Compounds and Hex ID",
-       x = "Variable Name",
-       y = "% Missingness",
-       caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE")
-
-# % Missingness in PFAS sites
-gg_miss_var(pfas_sites, show_pct = TRUE) +
-  labs(title = "Missingness by Variable: PFAS Surface Water Data",
-       caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE",
-       x = "Variable Name",
-       y = "% Missingness")
-```
-
-```{r}
 # Drop flag columns, replace NA in PFAS Result columns with 0, and ensure numeric
 public_water_wide <- public_water_wide |> 
   select(-ends_with("Flags")) |> 
@@ -244,9 +204,6 @@ public_water_wide <- public_water_wide |>
          (PFNAResult / 10) +
          (PFBSResult / 2000) +
          (PFHxSResult / 10))
-
-# Show first 5 rows
-head(public_water_wide, 5)
 ```
 
 ```{r}
@@ -258,8 +215,6 @@ high_hazard <- public_water_wide |>
   flextable() |> 
   set_caption("Public Water Locations with Hazard Index > 1") |> 
   autofit()
-
-high_hazard
 ```
 
 ```{r}
@@ -268,22 +223,6 @@ public_water_max <- public_water_wide |>
   group_by(hex_id) |> 
   slice_max(order_by = Hazard_Index, n = 1, with_ties = FALSE) |> 
   ungroup()
-
-# View the first few rows
-head(public_water_max, 5)
-```
-
-```{r}
-# Viewing the high hazard sites after getting the maximum per hex ID
-high_hazard_max <- public_water_max |> 
-  filter(Hazard_Index > 1) |> 
-  select(hex_id, Hazard_Index, HFPODAResult, PFNAResult, PFBSResult, PFHxSResult) |> 
-  arrange(desc(Hazard_Index)) |> 
-  flextable() |> 
-  set_caption("Public Water Locations with Hazard Index > 1 (Max per Hex ID)") |> 
-  autofit()
-
-high_hazard_max
 ```
 
 ```{r}
@@ -293,9 +232,9 @@ pivot_longer(cols = ends_with("Result"),
                names_to = "analyte",
                values_to = "analyte_value") |>
 mutate(analyte = gsub("Result$", "", analyte))
-
-head(public_water_max_long, 5)
 ```
+
+## Hazard Index by County
 
 ```{r}
 # Aggregate Hazard Index by county
@@ -305,7 +244,7 @@ distinct(hex_id, Hazard_Index, geoid) |>  # one hazard index per site
 group_by(geoid) |>
 summarise(total_hazard = sum(Hazard_Index, na.rm = TRUE)) |>
               ungroup() |>
-left_join(st_read("GeoFiles/cb_2018_us_county_500k.shp") |> 
+left_join(st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet= TRUE) |> 
 st_drop_geometry() |> 
 dplyr::select(GEOID, NAME, STATEFP),
     by = c("geoid" = "GEOID")) |>
@@ -343,23 +282,7 @@ mutate(system_type = recode(system_type,
   ))
 ```
 
-```{r}
-# Total hazard index per system type
-summary_table <- public_water_max_long |>
-distinct(system_type, hex_id, Hazard_Index) |>  
-group_by(system_type) |>
-summarise(total_hazard = sum(Hazard_Index, na.rm = TRUE),
-          n_sites = n()) |>
-ungroup() |>
-arrange(desc(total_hazard))
-
-flextable(summary_table) |>
-set_header_labels(system_type = "System Type",
-                  total_hazard = "Total Hazard",
-                  n_sites = "Number of Sites") |>
-theme_vanilla() |>
-autofit()
-```
+## Mean Analyte Conc. per System_Name
 
 ```{r}
 # Plotting Mean analyte concnetration per system_name 
@@ -402,39 +325,12 @@ geom_col(position = position_dodge(width = 0.7), width = 0.7) +
     axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-```{r}
-# Plot of counties with hazard index > 1
-# Aggregate Hazard Index by county
-county_hazard <- public_water_max |>
-filter(Hazard_Index > 1) |>
-distinct(hex_id, Hazard_Index, geoid) |>  # one hazard index per site
-group_by(geoid) |>
-summarise(total_hazard = sum(Hazard_Index, na.rm = TRUE)) |>
-              ungroup() |>
-left_join(st_read("GeoFiles/cb_2018_us_county_500k.shp") |> 
-st_drop_geometry() |> 
-dplyr::select(GEOID, NAME, STATEFP),
-    by = c("geoid" = "GEOID")) |>
-filter(!is.na(NAME))
-
-# Bar plot of counties which have high hazard index
-county_hazard |>
-ggplot(aes(x = reorder(NAME, total_hazard), y = total_hazard, fill = total_hazard)) +
-geom_col() +
-coord_flip() +
-labs(title = "Public Water Locations with Hazard Index > 1 by County",
-     x = "County",
-     y = "Total Hazard Index",
-     caption = "Data source: Michigan PFAS Action Response Team (MPART)") +
-scale_fill_viridis_c(option = "viridis") +
-theme_minimal()
-```
-
+## Hazard Index Distribution in Michigan
 
 ```{r}
 # Map of Hazard index distribution in Michigan
 # Load Michigan counties shapefile
-mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp") |>
+mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
   filter(STATEFP == "26")  
 
 high_hazard_sites <- public_water_max_long |>
@@ -459,26 +355,7 @@ ggplot() +
     axis.ticks = element_line(color = "black"))
 ```
 
-```{r}
-# Plot showing the pfas sites in Michigan
-pfas_sites_sf <- pfas_sites |>
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |>
-  mutate(type = str_replace_all(type, "mlitary", "military"),
-         type = str_to_title(type)) 
-ggplot() +
-  geom_sf(data = mi_counties, fill = "grey90", color = "white") +
-  geom_sf(data = pfas_sites_sf, aes(color = type), size = 1.5, alpha = 0.7) +
-  scale_color_viridis_d() +
-  labs(
-    title = "PFAS Sites Across Michigan",
-    color = "Site Type",
-    caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
-  ) +
-  theme_minimal()
-```
-
-Joining the two data sets (PFAS sites and public_water_max_long)
-
+### Combined Analysis
 ```{r}
 # Plotting the pfas sites with hazard index greater than 1 as per regulations
 # Convert geoid to character for joining
@@ -501,7 +378,7 @@ hazard_sites <- hazard_sites |>
 hazard_sites_sf <- hazard_sites |>
   st_as_sf(coords = c("lon", "lat"), crs = 4326)
 # Load Michigan shapefile
-mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp") |>
+mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
   filter(STATEFP == "26") 
 # Plot with color and size for Hazard_Index
 ggplot() +
@@ -518,6 +395,7 @@ ggplot() +
   theme(legend.position = "right")
 ```
 
+## PFAS sites by Type and Hazard Index
 
 ```{r}
 # Plotting PFAS sites by type and the Hazard_Index scale 
@@ -535,7 +413,7 @@ hazard_sites <- hazard_sites |>
 hazard_sites_sf <- hazard_sites |>
   st_as_sf(coords = c("lon", "lat"), crs = 4326)
 # Load Michigan shapefile
-mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp") |>
+mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
   filter(STATEFP == "26")
 # Map showing site type and degree of hazard
 ggplot() +
@@ -629,4 +507,24 @@ hazard_summary_by_type |>
   flextable() |>
   set_caption("Total Hazard and Main Analytes Distribution by Site Type (Hazard_Index > 1) - Wide Format") |>
   autofit()
+```
+
+## Hazard Index by System_Type
+
+```{r}
+# Total hazard index per system type
+summary_table <- public_water_max_long |>
+distinct(system_type, hex_id, Hazard_Index) |>  
+group_by(system_type) |>
+summarise(total_hazard = sum(Hazard_Index, na.rm = TRUE),
+          n_sites = n()) |>
+ungroup() |>
+arrange(desc(total_hazard))
+
+flextable(summary_table) |>
+set_header_labels(system_type = "System Type",
+                  total_hazard = "Total Hazard",
+                  n_sites = "Number of Sites") |>
+theme_vanilla() |>
+autofit()
 ```
