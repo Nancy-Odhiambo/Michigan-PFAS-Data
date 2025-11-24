@@ -345,7 +345,7 @@ top10_analyte <- surface_max_full |>
   geom_text(aes(
     label = paste0(
       percent(share, accuracy = 0.1), 
-      " (", comma(round(total_concentration, 1)), " ng/L)"
+      " (", comma(round(total_concentration, 1)), "ppt)"
     )),
     hjust = -0.05, size = 3.2
   ) +
@@ -387,7 +387,7 @@ ggplot(surface_county_map) +
   scale_fill_viridis_c(option = "magma", na.value = "grey90") +
   labs(
     title = "Total PFAS Concentration in Surface Water by County",
-    fill = "Total PFAS (ng/L)",
+    fill = "Total PFAS (ppt)",
     caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
   ) +
   theme_minimal()
@@ -417,7 +417,7 @@ ggplot(public_water_top10, aes(x = fct_reorder(system_name, total_value),
   labs(
     title = "Top 10 Public Water Systems by Total PFAS",
     x = "Public Water System",
-    y = "Total PFAS (ng/L)",
+    y = "Total PFAS (ppt)",
     fill = "Total PFAS",
     caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
   ) +
@@ -452,7 +452,7 @@ ggplot(top_analytes, aes(x = fct_reorder(analyte, total_concentration),
   labs(
     title = "Top 10 PFAS Analytes in Public Water Systems",
     x = "PFAS Analyte",
-    y = "Total PFAS Concentration (ng/L)",
+    y = "Total PFAS Concentration (ppt)",
     fill = "Total Concentration",
     caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
   ) +
@@ -481,7 +481,7 @@ ggplot(public_county_map) +
     title = "Total PFAS Concentration in Public Water by County",
     x = "Longitude",
     y = "Latitude",
-    fill = "Total PFAS (ng/L)",
+    fill = "Total PFAS (ppt)",
     caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
   ) +
   theme_minimal()
@@ -590,7 +590,9 @@ metric_labels <- c(
   total_public = "Total Public PFAS (ng/L)",
   n_sites = "Number of PFAS Sites"
 )
-
+```
+#### Plot
+```{r}
 # Faceted bar plot
 county_long |>
   ggplot(aes(x = NAME, y = value, fill = metric)) +
@@ -614,7 +616,6 @@ county_long |>
     axis.text.y = element_text(face = "bold")
   )
 ```
-
 ### Pie of Water Types
 #### Total Concentration by Water Type
 ```{r}
