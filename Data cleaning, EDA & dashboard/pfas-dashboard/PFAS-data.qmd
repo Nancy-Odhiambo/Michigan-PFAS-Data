@@ -323,8 +323,9 @@ public_max_full <- get_max_concentration(
   value_col = "analyte_value"
 )
 ```
-
-## Surface Water Analysis
+## PFAS Total Concentration{.tabset}
+### Surface Water
+#### Analyte Concentration
 
 ```{r}
 # Top 10 analyte category by total % & absolute concentration
@@ -367,6 +368,7 @@ top10_analyte <- surface_max_full |>
         legend.position = "none")
 ```
 
+#### Surface PFAS Distribution
 ```{r}
 # Map of total surface water PFAS by county
 # Load county shapefile
@@ -392,7 +394,8 @@ ggplot(surface_county_map) +
 
 ```
 
-## Public Water Analysis
+### Public Water
+#### Total PFAS in Public Water
 
 ```{r}
 # Top 10 public water systems by total PFAS
@@ -428,6 +431,7 @@ ggplot(public_water_top10, aes(x = fct_reorder(system_name, total_value),
 
 ```
 
+#### Top 10 Analytes in Public Water
 ```{r}
 # Top 10 PFAS analytes in public water
 top_analytes <- public_max_full |>
@@ -461,6 +465,7 @@ ggplot(top_analytes, aes(x = fct_reorder(analyte, total_concentration),
   expand_limits(y = max(top_analytes$total_concentration) * 1.1)  # space for labels
 ```
 
+#### Map of PFAS in Public Water
 ```{r}
 # Map of total public water PFAS by county
 public_county_map <- public_max_full |>
@@ -483,7 +488,8 @@ ggplot(public_county_map) +
 
 ```
 
-## PFAS Sites Analysis
+### PFAS Sites Analysis
+#### PFAS Sites Distribution
 
 ```{r}
 # Map of PFAS sites across Michigan
@@ -503,6 +509,7 @@ ggplot() +
   theme_minimal()
 ```
 
+#### Number of Sites per Type
 ```{r}
 # Number of PFAS sites per type
 sites_type <- pfas_sites |>
@@ -529,7 +536,8 @@ sites_type <- pfas_sites |>
   theme(legend.position = "none")
 ```
 
-## Combined Analysis
+### Combined Analysis
+#### Top 10 Counties Metrics
 
 ```{r, warning=FALSE}
 library(tidytext)
@@ -607,6 +615,8 @@ county_long |>
   )
 ```
 
+### Pie of Water Types
+#### Total Concentration by Water Type
 ```{r}
 # Total PFAS concentration by water type
 total_pfas <- bind_rows(
@@ -631,9 +641,4 @@ total_pfas |>
 
 ```
 
-## PFAS Temporal Analysis
-
-```{r}
-# Temporal analysis for top 5 counties over time
-
-```
+###Temporal Analysis
