@@ -40,6 +40,10 @@ library(leaflet)
 library(reactable)
 library(reactablefmtr)
 library(htmltools)
+library(leaflet.extras2)
+library(leaflegend)
+
+
 
 # Function for creating data dictionary
 data_dictionary <- function(myData, descripts) {
@@ -239,6 +243,14 @@ pivot_longer(cols = ends_with("Result"),
 mutate(analyte = gsub("Result$", "", analyte))
 ```
 
+```{r}
+merged_data <- public_water_max_long |>
+  left_join(
+    pfas_sites |> mutate(geoid = as.character(geoid)), 
+    by = "geoid",
+    relationship = "many-to-many"
+  )
+```
 ## Hazard Index Analysis {.tabset}
 
 ### Maps
@@ -248,36 +260,40 @@ mutate(analyte = gsub("Result$", "", analyte))
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
 # Load Michigan counties shapefile
-mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
+mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) %>%
   filter(STATEFP == "26")
 
 # Prepare analyte-wide data
-analyte_wide <- public_water_max_long |>
-  filter(analyte %in% hazard_analytes) |>
-  select(hex_id, analyte, analyte_value) |>
-  pivot_wider(names_from = analyte, values_from = analyte_value, values_fill = 0)
+analyte_wide <- public_water_max_long %>%
+  filter(analyte %in% hazard_analytes) %>%
+  select(hex_id, analyte, analyte_value) %>%
+  pivot_wider(
+    names_from = analyte,
+    values_from = analyte_value,
+    values_fill = 0
+  )
 
-# Prepare hazard sites with all relevant columns
-hazard_sites_full <- public_water_max_long |>
-  filter(Hazard_Index > 1) |>
-  distinct(hex_id, system_name, system_type, Hazard_Index, longitude, latitude) |>
-  rename(type = system_type) |>
-  left_join(analyte_wide, by = "hex_id") |>
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+# Prepare hazard sites
+hazard_sites_full <- public_water_max_long %>%
+  filter(Hazard_Index > 1) %>%
+  distinct(hex_id, system_name, system_type, Hazard_Index, longitude, latitude) %>%
+  rename(type = system_type) %>%
+  left_join(analyte_wide, by = "hex_id") %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  mutate(Hazard_Index = as.numeric(Hazard_Index))
 
-# Compute Michigan bounds for perfect fit
-mi_bbox <- st_bbox(mi_counties)
-
-# Define intuitive color palette: yellow (low) → red (high)
+# Color palette
+max_radius <- 20
 hazard_pal <- colorNumeric(
   palette = "YlOrRd",
-  domain  = hazard_sites_full$Hazard_Index,
-  na.color = "#CCCCCC",
-  reverse = FALSE
+  domain = c(0, max(hazard_sites_full$Hazard_Index, na.rm = TRUE))
 )
 
-# Create popup labels with all variables plus type
-hazard_popup <- hazard_sites_full |>
+hazard_sites_full <- hazard_sites_full %>%
+  mutate(scaled_radius = sqrt(Hazard_Index / max(Hazard_Index, na.rm = TRUE)) * max_radius)
+
+# Popups
+hazard_popup <- hazard_sites_full %>%
   mutate(popup = paste0(
     "<b>System Name:</b> ", system_name, "<br>",
     "<b>Type:</b> ", type, "<br>",
@@ -288,13 +304,43 @@ hazard_popup <- hazard_sites_full |>
     "<b>PFHxS:</b> ", round(PFHxS, 2)
   ))
 
-# Build interactive Leaflet map with custom zoom and dual legends
-leaflet(hazard_sites_full) |>
-  # Center on Michigan with higher zoom
-  setView(lng = -84.5, lat = 44.5, zoom = 7) |>
+# Legend values (just 3 representative bubbles)
+legend_values <- c(0.25, 0.5, 1)  # fraction of max for size
+legend_radius <- sqrt(legend_values) * max_radius
+legend_colors <- hazard_pal(legend_values * max(hazard_sites_full$Hazard_Index, na.rm = TRUE))
+
+# Build custom HTML legend (color + size only, horizontal layout)
+legend_html <- paste0(
+  "<div style='line-height:1.5;background:white;padding:10px;border-radius:5px;
+                      box-shadow:0 0 5px rgba(0,0,0,0.3);width:auto;'>",
+  "<h4 style='margin:0;color:#4B0082;'>Hazard Index</h4>",
+  "<div style='display:flex;align-items:center;justify-content:space-around;'>",
+  paste0(
+    sapply(seq_along(legend_values), function(i) {
+      paste0(
+        "<svg height='", max(legend_radius)*2, "' width='", max(legend_radius)*2, "' style='margin-right:5px;'>",
+        "<circle cx='", max(legend_radius), "' cy='", max(legend_radius),
+        "' r='", legend_radius[i], "' fill='", legend_colors[i],
+        "' fill-opacity='0.7' stroke='black' stroke-width='0.5'/>",
+        "</svg>"
+      )
+    }),
+    collapse = ""
+  ),
+  "</div>",
+  "</div>"
+)
+
+# Get bounding box of Michigan counties
+mi_bounds <- st_bbox(mi_counties)
+
+# Build interactive Leaflet map with custom zoom and bubble legend
+leaflet(hazard_sites_full) %>%
+  # Center on Michigan with zoomed-out view so full state fits
+  setView(lng = -84.5, lat = 44.5, zoom = 6) %>%
   
   # Base map tiles
-  addProviderTiles(providers$CartoDB.Positron) |>
+  addProviderTiles(providers$CartoDB.Positron) %>%
   
   # Michigan county polygons
   addPolygons(
@@ -304,15 +350,16 @@ leaflet(hazard_sites_full) |>
     weight = 1,
     fillOpacity = 0.3,
     label = ~NAME
-  ) |>
+  ) %>%
   
   # Hazard site markers
   addCircleMarkers(
-    radius = ~sqrt(Hazard_Index) * 3,  # proportional to Hazard_Index
+    radius = ~scaled_radius,  # proportional to Hazard_Index
     fillColor = ~hazard_pal(Hazard_Index),
-    color = NA,
+    color = "black",
     fillOpacity = 0.7,
-    stroke = FALSE,
+    stroke = TRUE,
+    weight = 0.5,
     label = lapply(hazard_popup$popup, HTML),
     labelOptions = labelOptions(
       direction = "auto",
@@ -320,111 +367,19 @@ leaflet(hazard_sites_full) |>
       opacity = 0.9,
       offset = c(0, -5)
     )
-  ) |>
+  ) %>%
   
-  # Numeric legend with styled title
-  addLegend(
-    position = "bottomleft",
-    pal = hazard_pal,
-    values = hazard_sites_full$Hazard_Index,
-    title = HTML("<b style='color:#4B0082;'>Hazard Index</b>"),
-    labFormat = labelFormat(
-      transform = function(x) round(x, 2),   # numeric rounding only
-      digits = 2
-    )
-  ) |>
-  
-  # Custom HTML control box for explanatory text
-  addControl(
-    html = "<div style='background:white;padding:10px;border-radius:5px;
-                   box-shadow:0 0 5px rgba(0,0,0,0.3);'>
-              <h4 style='margin:0;color:#4B0082;'>Hazard Guide</h4>
-              <p style='margin:0;font-size:12px;'>
-                Larger circles = high<br>
-                Low (yellow) to High (red)
-              </p>
-            </div>",
-    position = "topright"
-  )
+  # Custom HTML bubble legend (color + size only)
+  addControl(html = legend_html, position = "topright")
 
 ```
 ```{r}
-
-# Define main hazard analytes
-hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
-
-# Prepare analyte-wide data
-analyte_wide <- public_water_max_long |>
-  filter(analyte %in% hazard_analytes) |>
-  select(hex_id, analyte, analyte_value) |>
-  pivot_wider(names_from = analyte, values_from = analyte_value, values_fill = 0)
-
-# Prepare hazard sites with all relevant columns
-hazard_sites_full <- public_water_max_long |>
-  filter(Hazard_Index > 1) |>
-  distinct(hex_id, system_name, system_type, Hazard_Index, longitude, latitude) |>
-  rename(type = system_type) |>
-  left_join(analyte_wide, by = "hex_id") |>
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
-
-# Define color palette for Hazard_Index (reverse for descending legend)
-hazard_pal <- colorNumeric(
-  palette = "magma",
-  domain = hazard_sites_full$Hazard_Index,
-  reverse = TRUE   # ensures legend shows high → low
-)
-
-# Create popup labels
-hazard_popup <- hazard_sites_full |>
-  mutate(popup = paste0(
-    "<b>System Name:</b> ", system_name, "<br>",
-    "<b>Type:</b> ", type, "<br>",
-    "<b>Hazard Index:</b> ", round(Hazard_Index, 2), "<br>",
-    "<b>HFPODA:</b> ", round(HFPODA, 2), "<br>",
-    "<b>PFNA:</b> ", round(PFNA, 2), "<br>",
-    "<b>PFBS:</b> ", round(PFBS, 2), "<br>",
-    "<b>PFHxS:</b> ", round(PFHxS, 2)
-  ))
-
-# Build interactive Leaflet map
-leaflet(hazard_sites_full) |>
-  setView(lng = -84.5, lat = 44.5, zoom = 7) |>
-  addProviderTiles(providers$CartoDB.Positron) |>
-  
-  # Hazard site markers with clustering
-  addCircleMarkers(
-    radius = ~sqrt(Hazard_Index) * 3,
-    fillColor = ~hazard_pal(Hazard_Index),
-    color = NA,
-    fillOpacity = 0.7,
-    stroke = FALSE,
-    label = lapply(hazard_popup$popup, HTML),
-    clusterOptions = markerClusterOptions()
-  ) |>
-  
-  # Custom HTML gradient legend (descending order)
-  addControl(
-    html = paste0(
-      "<div style='background:white;padding:10px;border-radius:6px;
-                   box-shadow:0 1px 6px rgba(0,0,0,0.2); font-size:12px;'>
-         <div style='font-weight:bold;margin-bottom:4px;'>Hazard Index (High → Low)</div>
-         <div style='background:linear-gradient(to right, #fcfdbf, #fe9f6d, #de4968, #8c2981, #3b0f6f, #000004);
-                     height:15px; border:1px solid #999; margin-bottom:4px;'></div>
-         <div style='display:flex; justify-content:space-between;'>
-           <span>", round(max(hazard_sites_full$Hazard_Index, na.rm = TRUE), 2), "</span>
-           <span>", round(min(hazard_sites_full$Hazard_Index, na.rm = TRUE), 2), "</span>
-         </div>
-       </div>"
-    ),
-    position = "bottomright"
-  )
 
 ```
 ### Hazard Plot1
 #### County Hazard Index
 
 ```{r}
-# Aggregate Hazard Index by county
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
@@ -435,54 +390,49 @@ county_analytes <- public_water_max_long |>
   group_by(geoid, analyte) |>
   summarise(total_hazard_analyte = sum(Hazard_Index, na.rm = TRUE), .groups = "drop")
 
-# Compute total hazard per county
+# Join county names
+county_info <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
+  st_drop_geometry() |>
+  dplyr::select(GEOID, NAME)
+
+county_analytes <- county_analytes |>
+  left_join(county_info, by = c("geoid" = "GEOID"))
+
+# Compute total hazard per county to get top 10
 county_total <- county_analytes |>
-  group_by(geoid) |>
-  summarise(total_hazard = sum(total_hazard_analyte, na.rm = TRUE), .groups = "drop")
-
-# Compute dominant analyte per county
-county_dominant <- county_analytes |>
-  group_by(geoid) |>
-  slice_max(order_by = total_hazard_analyte, n = 1, with_ties = FALSE) |>
-  ungroup() |>
-  rename(dominant_analyte = analyte, dominant_hazard = total_hazard_analyte)
-
-# Join totals and dominant analyte info
-county_hazard <- county_total |>
-  left_join(county_dominant, by = "geoid") |>
-  left_join(
-    st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |> 
-      st_drop_geometry() |> 
-      dplyr::select(GEOID, NAME, STATEFP),
-    by = c("geoid" = "GEOID")
-  ) |>
-  filter(!is.na(NAME)) |>
+  group_by(geoid, NAME) |>
+  summarise(total_hazard = sum(total_hazard_analyte, na.rm = TRUE), .groups = "drop") |>
   arrange(desc(total_hazard)) |>
-  slice_head(n = 10)   # keep top 10 counties
+  slice_head(n = 10)
 
-# Create ggplot object with interactive tooltip
-p_hazard <- ggplot(county_hazard, aes(
-  x = reorder(NAME, total_hazard),
-  y = total_hazard,
-  fill = total_hazard,
+# Filter analytes to top 10 counties
+county_analytes_top <- county_analytes |>
+  filter(geoid %in% county_total$geoid)
+
+# Create stacked bar plot
+p_hazard <- ggplot(county_analytes_top, aes(
+  x = reorder(NAME, total_hazard_analyte),  # order can also use total per county if desired
+  y = total_hazard_analyte,
+  fill = analyte,
   text = paste(
-    "Total Hazard Index:", round(total_hazard, 2),
-    "<br>Dominant analyte:", dominant_analyte,
-    "<br>Hazard Contribution:", round(dominant_hazard, 2)
+    "County:", NAME,
+    "<br>Analyte:", analyte,
+    "<br>Hazard Contribution:", round(total_hazard_analyte, 2)
   )
 )) +
   geom_col(width = 0.7) +
   coord_flip() +
-  scale_fill_viridis_c(option = "viridis") +
+  scale_fill_viridis_d(option = "viridis", end = 0.9) +
   labs(
     title = "Top 10 Counties with Hazard Index > 1",
     x = "County",
-    y = "Total Hazard Index",
+    y = "Hazard Index by Analyte",
+    fill = "Analyte",
     caption = "Data source: Michigan PFAS Action Response Team (MPART)"
   ) +
   theme_minimal()
 
-# Convert ggplot to interactive Plotly object with hover text
+# Convert to interactive Plotly chart
 ggplotly(p_hazard, tooltip = "text")
 ```
 
@@ -506,62 +456,54 @@ mutate(system_type = recode(system_type,
 ```
 
 ### Hazard Plot 2
-#### Mean Analyte per System
+#### Hazard Index per System
 ```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
-# Prepare unique values and recode analytes
+# Prepare unique values and keep only hazard analytes
 unique_values <- public_water_max_long |>
   distinct(hex_id, system_name, analyte, analyte_value) |>
-  mutate(analyte = ifelse(analyte %in% hazard_analytes, analyte, "Non-hazard analytes"),
-         system_name = tolower(system_name))
+  filter(analyte %in% hazard_analytes) |>        # remove non-hazard analytes
+  mutate(system_name = tolower(system_name))
 
-# Aggregate mean analyte value by system name
-mean_by_system <- unique_values |>
+# Aggregate total analyte value by system name
+total_by_system <- unique_values |>
   group_by(system_name, analyte) |>
-  summarise(mean_value = mean(analyte_value, na.rm = TRUE), .groups = "drop")
+  summarise(total_value = sum(analyte_value, na.rm = TRUE), .groups = "drop")
 
-# Identify top 10 systems by total mean analyte value
-top_systems <- mean_by_system |>
+# Identify top 10 systems by total hazard
+top_systems <- total_by_system |>
   group_by(system_name) |>
-  summarise(total_mean = sum(mean_value)) |>
+  summarise(total_hazard = sum(total_value, na.rm = TRUE), .groups = "drop") |>
   ungroup() |>
-  arrange(desc(total_mean)) |>
+  arrange(desc(total_hazard)) |>
   slice_head(n = 10)
 
 # Filter for top 10 systems and order factor levels
-plot_data <- mean_by_system |>
+plot_data <- total_by_system |>
   filter(system_name %in% top_systems$system_name) |>
   mutate(system_name = factor(system_name, levels = top_systems$system_name))
 
 # Create ggplot object with interactive tooltip (stacked bars)
-p_mean <- ggplot(plot_data, aes(x = system_name, y = mean_value, fill = analyte,
-                                text = paste("System:", system_name,
-                                             "<br>Analyte:", analyte,
-                                             "<br>Mean Value:", round(mean_value, 2)))) +
+p_total <- ggplot(plot_data, aes(x = system_name, y = total_value, fill = analyte,
+                                 text = paste("System:", system_name,
+                                              "<br>Analyte:", analyte,
+                                              "<br>Total Value:", round(total_value, 2)))) +
   geom_col(width = 0.7, position = "stack") +  # Stacked bar plot
   scale_fill_viridis_d(option = "plasma") +    # Color scale
-  labs(title = "Mean PFAS Analyte Levels by Top 10 Systems",
-       x = "System Name", y = "Mean Analyte Value (ppt)", fill = "Analyte",
+  labs(title = "Total PFAS Hazard by Top 10 Systems",
+       x = "System Name", y = "Total Hazard Value (ppt)", fill = "Analyte",
        caption = "Data source: Michigan PFAS Action Response Team (MPART)") +
   theme_minimal() +
   theme(legend.position = "right", axis.text.x = element_text(angle = 45, hjust = 1))
 
 # Convert ggplot to interactive Plotly object
-ggplotly(p_mean, tooltip = "text")
+ggplotly(p_total, tooltip = "text")
 
 ```
 
 
-```{r}
-merged_data <- public_water_max_long |>
-  left_join(
-    pfas_sites |> mutate(geoid = as.character(geoid)), 
-    by = "geoid",
-    relationship = "many-to-many"
-  )
-```
 ### Hazard Plot 3
 #### Mean Hazard Index per Site
 ```{r}

@@ -1,0 +1,107 @@
+[
+  {
+    "objectID": "about.html",
+    "href": "about.html",
+    "title": "Michigan PFAS Dashboard",
+    "section": "",
+    "text": "Data Providers: Michigan Department of Environment, Great Lakes, and Energy (EGLE); Michigan PFAS Action Response Team (MPART)\nNote: This dashboard is an independent project and is not affiliated with or endorsed by MPART or the State of Michigan.\nProject License: The code for this project is licensed under the MIT License.\nAcknowledgments:\nThis project was created by Nancy Odhiambo as part of a Master’s Graduate Research Assistantship in the Department of Statistics, Grand Valley State University.\nFaculty Mentor: Dr. Andrew DiLernia"
+  },
+  {
+    "objectID": "about.html#attribution-licensing",
+    "href": "about.html#attribution-licensing",
+    "title": "Michigan PFAS Dashboard",
+    "section": "",
+    "text": "Data Providers: Michigan Department of Environment, Great Lakes, and Energy (EGLE); Michigan PFAS Action Response Team (MPART)\nNote: This dashboard is an independent project and is not affiliated with or endorsed by MPART or the State of Michigan.\nProject License: The code for this project is licensed under the MIT License.\nAcknowledgments:\nThis project was created by Nancy Odhiambo as part of a Master’s Graduate Research Assistantship in the Department of Statistics, Grand Valley State University.\nFaculty Mentor: Dr. Andrew DiLernia"
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Project Overview 🧭",
+    "section": "",
+    "text": "This project presents the Michigan PFAS Dashboard, an interactive data visualization tool that explores PFAS (Per- and Polyfluoroalkyl Substances) contamination across Michigan.\nBuilt with R and Quarto, the dashboard combines data from surface water, public water supplies, and known contamination sites to support environmental research and policy decision-making.\n\n\n\nPer- and polyfluoroalkyl substances (PFAS) are a large group of man-made chemicals, including perfluorooctanoic acid (PFOA) and perfluorooctanesulfonic acid (PFOS). These chemicals have been widely used in manufacturing, firefighting, and consumer products.\nBecause PFAS are highly persistent in the environment and in the human body, they can accumulate over time and pose potential health risks.\nPFAS contamination in Michigan has raised significant public health and environmental concerns, echoing past environmental advocacy efforts such as those led by Erin Brockovich.\nThis project aims to make PFAS-related data more accessible and easier to explore through an interactive dashboard.\nThe dashboard allows users to visualize PFAS concentrations in surface water, public water supplies, and known contamination sites across Michigan. By improving access to PFAS data, the dashboard supports research, policy discussions, and public awareness.\n\n\n\n\nThis section outlines the workflow that integrates and cleans multiple PFAS datasets, applies geospatial identifiers, and visualizes contamination patterns.\nThe dashboard serves as both an analytical and educational tool, designed to help users understand the scope and implications of PFAS contamination in Michigan.\n\n\n\n\n\n🗺️ Interactive maps showing PFAS contamination sites across Michigan\n\n🌊 Visualizations of PFAS concentrations in surface water\n\n💧 Charts of PFAS levels in municipal drinking water\n\n📊 Searchable tables and downloadable data\n\n☣️ Hazard Index Exploration to assess potential health risks based on PFAS exposure\n\n👥 User-friendly design to support researchers, policymakers, and the general public\n\n\n\n\n\n\nFrontend: Leaflet, Plotly\nBackend: R, Quarto, Markdown\n\nHosting: GitHub Pages"
+  },
+  {
+    "objectID": "index.html#introduction",
+    "href": "index.html#introduction",
+    "title": "Project Overview 🧭",
+    "section": "",
+    "text": "Per- and polyfluoroalkyl substances (PFAS) are a large group of man-made chemicals, including perfluorooctanoic acid (PFOA) and perfluorooctanesulfonic acid (PFOS). These chemicals have been widely used in manufacturing, firefighting, and consumer products.\nBecause PFAS are highly persistent in the environment and in the human body, they can accumulate over time and pose potential health risks.\nPFAS contamination in Michigan has raised significant public health and environmental concerns, echoing past environmental advocacy efforts such as those led by Erin Brockovich.\nThis project aims to make PFAS-related data more accessible and easier to explore through an interactive dashboard.\nThe dashboard allows users to visualize PFAS concentrations in surface water, public water supplies, and known contamination sites across Michigan. By improving access to PFAS data, the dashboard supports research, policy discussions, and public awareness."
+  },
+  {
+    "objectID": "index.html#project-summary",
+    "href": "index.html#project-summary",
+    "title": "Project Overview 🧭",
+    "section": "",
+    "text": "This section outlines the workflow that integrates and cleans multiple PFAS datasets, applies geospatial identifiers, and visualizes contamination patterns.\nThe dashboard serves as both an analytical and educational tool, designed to help users understand the scope and implications of PFAS contamination in Michigan."
+  },
+  {
+    "objectID": "index.html#key-features-of-the-dashboard",
+    "href": "index.html#key-features-of-the-dashboard",
+    "title": "Project Overview 🧭",
+    "section": "",
+    "text": "🗺️ Interactive maps showing PFAS contamination sites across Michigan\n\n🌊 Visualizations of PFAS concentrations in surface water\n\n💧 Charts of PFAS levels in municipal drinking water\n\n📊 Searchable tables and downloadable data\n\n☣️ Hazard Index Exploration to assess potential health risks based on PFAS exposure\n\n👥 User-friendly design to support researchers, policymakers, and the general public"
+  },
+  {
+    "objectID": "index.html#technologies-used",
+    "href": "index.html#technologies-used",
+    "title": "Project Overview 🧭",
+    "section": "",
+    "text": "Frontend: Leaflet, Plotly\nBackend: R, Quarto, Markdown\n\nHosting: GitHub Pages"
+  },
+  {
+    "objectID": "02-analysis.html",
+    "href": "02-analysis.html",
+    "title": "Michigan PFAS Data",
+    "section": "",
+    "text": "hex_idHazard_IndexHFPODAResultPFNAResultPFBSResultPFHxSResult23434.720500041.034739410.0000010000.005539.300009300.001,1148.700008700.0056.715000030.067376.20300006.0621,1775.10000000.0511,5624.806000812.0407664.501000342.0112504.00000000.0401243.90150003.0391,4403.60400008.0361,1523.60300006.0364193.20350007.0321,2753.20190003.8322962.30000000.0232932.20000000.0221,3772.20000000.0222052.10250005.0212991.914500029.0191,5211.90115002.3191,0031.80200004.0181,3481.80000000.0181,2631.70200004.0173601.50200004.0151,0761.401500143.001,3041.40150003.0141711.40100002.0141,3861.209500019.0125151.20300006.0121,4921.20000000.012781.10000000.0113741.00450009.0104311.00150003.010\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nSystem TypeTotal HazardNumber of SitesCommunity Water Supply (for example Municipal Supply, Apartment, Nursing Home, Prison, etc.)145.2770985School22.6660234Non-Community Water Supply (Child Care Provider)2.827580Non-Community Water Supply (Children's Camp)2.3135110Non-Community Water Supply (Industry)1.8355116Office Building1.40155Non-Community Water Supply (Medical Care Provider)0.709555Non-Community Water Supply (Adult Foster Care Provider)0.00006Non-Community Water Supply (Hotel or Motel)0.00004Park0.00002Residential0.00001Tribal Lands0.000012\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\ntypetotal_hazardn_sitesHFPODAPFBSPFHxSPFNAAirport371.428015280114.06408Landfill264.67422093137.152642Fire Related200.96361218781.83078Industrial148.6296110114.83638Military144.0460918723.013934Plating111.674689337.31860Wastewater93.66408032.02340Paper Manufacturing76.11606058.01828Unknown41.64604023.01040Tannery28.8180209.0720Laundromat/Dry Cleaner22.02804014.0550MIlitary8.8000100.0220Refinery6.8080104.0170"
+  },
+  {
+    "objectID": "02-analysis.html#hex-id-hazard-index-and-analyte-contribution",
+    "href": "02-analysis.html#hex-id-hazard-index-and-analyte-contribution",
+    "title": "Michigan PFAS Data",
+    "section": "",
+    "text": "hex_idHazard_IndexHFPODAResultPFNAResultPFBSResultPFHxSResult23434.720500041.034739410.0000010000.005539.300009300.001,1148.700008700.0056.715000030.067376.20300006.0621,1775.10000000.0511,5624.806000812.0407664.501000342.0112504.00000000.0401243.90150003.0391,4403.60400008.0361,1523.60300006.0364193.20350007.0321,2753.20190003.8322962.30000000.0232932.20000000.0221,3772.20000000.0222052.10250005.0212991.914500029.0191,5211.90115002.3191,0031.80200004.0181,3481.80000000.0181,2631.70200004.0173601.50200004.0151,0761.401500143.001,3041.40150003.0141711.40100002.0141,3861.209500019.0125151.20300006.0121,4921.20000000.012781.10000000.0113741.00450009.0104311.00150003.010"
+  },
+  {
+    "objectID": "02-analysis.html#hazard-index-by-system_type",
+    "href": "02-analysis.html#hazard-index-by-system_type",
+    "title": "Michigan PFAS Data",
+    "section": "",
+    "text": "System TypeTotal HazardNumber of SitesCommunity Water Supply (for example Municipal Supply, Apartment, Nursing Home, Prison, etc.)145.2770985School22.6660234Non-Community Water Supply (Child Care Provider)2.827580Non-Community Water Supply (Children's Camp)2.3135110Non-Community Water Supply (Industry)1.8355116Office Building1.40155Non-Community Water Supply (Medical Care Provider)0.709555Non-Community Water Supply (Adult Foster Care Provider)0.00006Non-Community Water Supply (Hotel or Motel)0.00004Park0.00002Residential0.00001Tribal Lands0.000012"
+  },
+  {
+    "objectID": "02-analysis.html#pfas-sites-by-type-and-hazard-index",
+    "href": "02-analysis.html#pfas-sites-by-type-and-hazard-index",
+    "title": "Michigan PFAS Data",
+    "section": "",
+    "text": "typetotal_hazardn_sitesHFPODAPFBSPFHxSPFNAAirport371.428015280114.06408Landfill264.67422093137.152642Fire Related200.96361218781.83078Industrial148.6296110114.83638Military144.0460918723.013934Plating111.674689337.31860Wastewater93.66408032.02340Paper Manufacturing76.11606058.01828Unknown41.64604023.01040Tannery28.8180209.0720Laundromat/Dry Cleaner22.02804014.0550MIlitary8.8000100.0220Refinery6.8080104.0170"
+  },
+  {
+    "objectID": "PFAS-data.html#public-water-analysis",
+    "href": "PFAS-data.html#public-water-analysis",
+    "title": "PFAS Concentration Analysis",
+    "section": "Public Water Analysis",
+    "text": "Public Water Analysis"
+  },
+  {
+    "objectID": "PFAS-data.html#pfas-sites-analysis",
+    "href": "PFAS-data.html#pfas-sites-analysis",
+    "title": "PFAS Concentration Analysis",
+    "section": "PFAS Sites Analysis",
+    "text": "PFAS Sites Analysis"
+  },
+  {
+    "objectID": "PFAS-data.html#combined-analysis",
+    "href": "PFAS-data.html#combined-analysis",
+    "title": "PFAS Concentration Analysis",
+    "section": "Combined Analysis",
+    "text": "Combined Analysis\n\n\nNAMEtotal_surfacetotal_publicn_sitesSt. Clair57,926.7819.03Oakland52,017.1841,638.023Kalamazoo50,842.4502,173.814Wayne32,266.01158.018Kent15,589.815525.227Washtenaw15,261.780141.09Livingston10,870.080346.012Genesee8,795.43211.017Muskegon8,284.114330.717Marquette8,101.250366.02"
+  },
+  {
+    "objectID": "PFAS-data.html#pfas-temporal-analysis",
+    "href": "PFAS-data.html#pfas-temporal-analysis",
+    "title": "PFAS Concentration Analysis",
+    "section": "PFAS Temporal Analysis",
+    "text": "PFAS Temporal Analysis"
+  }
+]
