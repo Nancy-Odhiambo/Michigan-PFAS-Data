@@ -16,8 +16,7 @@ The dashboard allows users to visualize PFAS concentrations in surface water, pu
 ---
 
 ## Dashboard 🖥️
-🔗 **[View the Live Dashboard Here](#)**  
-*(View once ready)*
+🔗 **[View the Live Dashboard Here](https://nancy-odhiambo.github.io/Michigan-PFAS-Data/)**  
 
 ---
 
@@ -27,7 +26,6 @@ The dashboard allows users to visualize PFAS concentrations in surface water, pu
 - 💧 Visualizations of PFAS levels in municipal drinking water
 - 📊 Searchable tables and downloadable data
 - 👥 User-friendly design to support researchers, policymakers, and the general public
-*(To update with actual viasualizations)*
 ---
 
 ## Data Source 📂
