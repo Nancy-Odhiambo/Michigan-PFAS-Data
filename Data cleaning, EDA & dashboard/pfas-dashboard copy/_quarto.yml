@@ -11,7 +11,7 @@ website:
     left: []
     right:
       - text: "Project Overview"
-        href: index.html
+        href: index.qmd
       - text: "PFAS Concentrations"
         href: PFAS-data.qmd
       - text: "Hazard Analysis"
