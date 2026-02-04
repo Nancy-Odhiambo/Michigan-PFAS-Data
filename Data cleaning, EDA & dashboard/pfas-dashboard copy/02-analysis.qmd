@@ -42,6 +42,7 @@ library(reactablefmtr)
 library(htmltools)
 library(leaflet.extras2)
 library(leaflegend)
+library(htmlwidgets)
 
 
 
@@ -215,11 +216,12 @@ public_water_wide <- public_water_wide |>
          (PFHxSResult / 10))
 ```
 
+
 ```{r}
 # Displaying the high index areas with the highest analyte contributor in a table
 high_hazard <- public_water_wide |> 
   filter(Hazard_Index > 1) |> 
-  select(hex_id, Hazard_Index, HFPODAResult, PFNAResult, PFBSResult, PFHxSResult) |> 
+  select(hex_id, sample_date, Hazard_Index, HFPODAResult, PFNAResult, PFBSResult, PFHxSResult) |> 
   arrange(desc(Hazard_Index)) |> 
   flextable() |> 
   set_caption("Public Water Locations with Hazard Index > 1") |> 
@@ -234,6 +236,7 @@ public_water_max <- public_water_wide |>
   ungroup()
 ```
 
+
 ```{r}
 # Changing the wide format to long format
 public_water_max_long <- public_water_max |>
@@ -243,6 +246,7 @@ pivot_longer(cols = ends_with("Result"),
 mutate(analyte = gsub("Result$", "", analyte))
 ```
 
+
 ```{r}
 merged_data <- public_water_max_long |>
   left_join(
@@ -251,10 +255,80 @@ merged_data <- public_water_max_long |>
     relationship = "many-to-many"
   )
 ```
+
+```{r}
+# Reusable JS for auto-hover
+js_auto_hover <- "
+function(el, x) {
+  var totalPoints = el.data[0].x.length;
+  var i = 0;
+  setInterval(function() {
+    Plotly.Fx.hover(el, [{ curveNumber: 0, pointNumber: i }]);
+    i = (i + 1) % totalPoints;
+  }, 2000);
+}
+"
+```
+
+```{r}
+# Reusable JS for auto-hover on pie charts
+js_auto_hover_pie <- "
+function(el, x) {
+  var totalSlices = el.data[0].labels.length; // number of pie slices
+  var i = 0;
+  setInterval(function() {
+    Plotly.Fx.hover(el, [{ curveNumber: 0, pointNumber: i }]);
+    i = (i + 1) % totalSlices;
+  }, 2000);
+}
+"
+```
+
+```{r}
+# Prepare system type mapping
+system_type_map <- tibble(
+  short_name = c(
+    "ADFSTC", "CHLCMP", "DAYCARE", "INDUS", "MEDCAR",
+    "MOTEL", "MUN", "OFFICE", "PARK", "RESD", "SCH", "TRB"
+  ),
+  full_name = c(
+    "Non-Community Water Supply (Adult Foster Care Provider)",
+    "Non-Community Water Supply (Children's Camp)",
+    "Non-Community Water Supply (Child Care Provider)",
+    "Non-Community Water Supply (Industry)",
+    "Non-Community Water Supply (Medical Care Provider)",
+    "Non-Community Water Supply (Hotel or Motel)",
+    "Community Water Supply (for example Municipal Supply, Apartment, Nursing Home, Prison, etc.)",
+    "Office Building",
+    "Park",
+    "Residential",
+    "School",
+    "Tribal Lands"
+  )
+)
+
+# Apply short names to the dataset
+public_water_max_long <- public_water_max_long |>
+  mutate(system_short = recode(system_type,
+    "Non-Community Water Supply (Adult Foster Care Provider)" = "ADFSTC",
+    "Non-Community Water Supply (Children's Camp)" = "CHLCMP",
+    "Non-Community Water Supply (Child Care Provider)" = "DAYCARE",
+    "Non-Community Water Supply (Industry)" = "INDUS",
+    "Non-Community Water Supply (Medical Care Provider)" = "MEDCAR",
+    "Non-Community Water Supply (Hotel or Motel)" = "MOTEL",
+    "Community Water Supply (for example Municipal Supply, Apartment, Nursing Home, Prison, etc.)" = "MUN",
+    "Office Building" = "OFFICE",
+    "Park" = "PARK",
+    "Residential" = "RESD",
+    "School" = "SCH",
+    "Tribal Lands" = "TRB"
+  ))
+```
+
 ## Hazard Index Analysis {.tabset}
 
 ### Maps
-#### Michigan PFAS Composition
+#### Michigan PFAS Map
 ```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
@@ -373,22 +447,48 @@ leaflet(hazard_sites_full) %>%
   addControl(html = legend_html, position = "topright")
 
 ```
-```{r}
 
-```
-### Hazard Plot1
-#### County Hazard Index
+
+### County Analysis
+#### Top 15 Hazard > 1
 
 ```{r}
+# JS for automatic bar hover
+js_auto_hover <- "
+function(el, x) {
+  var totalPoints = el.data[0].y.length;
+  var i = 0;
+  setInterval(function() {
+    Plotly.Fx.hover(el, [{ curveNumber: 0, pointNumber: i }], 'xy');
+    i = (i + 1) % totalPoints;
+  }, 2000);
+}
+"
+
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
-# Aggregate hazard index contributions by county and analyte
+# Aggregate analyte-level hazard contributions by county and analyte
 county_analytes <- public_water_max_long |>
-  filter(Hazard_Index > 1, !is.na(analyte), analyte %in% hazard_analytes) |>
-  distinct(hex_id, geoid, analyte, Hazard_Index) |>
+  filter(
+    Hazard_Index > 1,
+    !is.na(analyte),
+    analyte %in% hazard_analytes,
+    !is.na(analyte_value)
+  ) |>
+  mutate(
+    analyte_hazard = case_when(
+      analyte == "HFPODA" ~ analyte_value / 10,
+      analyte == "PFNA"   ~ analyte_value / 10,
+      analyte == "PFBS"   ~ analyte_value / 2000,
+      analyte == "PFHxS"  ~ analyte_value / 10
+    )
+  ) |>
   group_by(geoid, analyte) |>
-  summarise(total_hazard_analyte = sum(Hazard_Index, na.rm = TRUE), .groups = "drop")
+  summarise(
+    total_hazard_analyte = sum(analyte_hazard, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 # Join county names
 county_info <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
@@ -396,51 +496,108 @@ county_info <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) |>
   dplyr::select(GEOID, NAME)
 
 county_analytes <- county_analytes |>
-  left_join(county_info, by = c("geoid" = "GEOID"))
+  left_join(county_info, by = c("geoid" = "GEOID")) |>
+  mutate(NAME = coalesce(NAME, "Unknown County"))
 
-# Compute total hazard per county to get top 10
+# Compute total hazard per county to get top 15
 county_total <- county_analytes |>
   group_by(geoid, NAME) |>
-  summarise(total_hazard = sum(total_hazard_analyte, na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    total_hazard = sum(total_hazard_analyte, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
   arrange(desc(total_hazard)) |>
-  slice_head(n = 10)
+  slice_head(n = 15)
 
-# Filter analytes to top 10 counties
+# Prepare data for Plotly
+plot_data <- county_total |>
+  mutate(NAME = factor(NAME, levels = NAME))  # keep order descending
+
+# Create Plotly bar chart with colored hover tooltip
+p_overall <- plot_ly(
+  data = plot_data,
+  x = ~NAME,
+  y = ~total_hazard,
+  type = "bar",
+  marker = list(color = "darkorange"),
+  text = ~round(total_hazard, 1),
+  textposition = "outside",
+  hoverinfo = "text",
+  hovertext = ~paste("Hazard Index:", round(total_hazard, 1))
+) |>
+  layout(
+    title = "Top Counties with Hazard Index > 1",
+    xaxis = list(title = "County", tickangle = -45),
+    yaxis = list(title = "Hazard Index"),
+    margin = list(b = 150),
+    hoverlabel = list(
+      bgcolor = "lightgreen",   
+      font = list(color = "black", size = 12),  
+      bordercolor = "orange"     
+    )
+  ) |>
+  onRender(js_auto_hover)
+
+p_overall
+
+```
+```{r}
+# Make sure county_analytes_top exists for the top 15 counties
 county_analytes_top <- county_analytes |>
-  filter(geoid %in% county_total$geoid)
+  filter(geoid %in% county_total$geoid) |>
+  mutate(NAME = factor(NAME, levels = county_total$NAME))  # preserve order
 
-# Create stacked bar plot
-p_hazard <- ggplot(county_analytes_top, aes(
-  x = reorder(NAME, total_hazard_analyte),  # order can also use total per county if desired
-  y = total_hazard_analyte,
-  fill = analyte,
-  text = paste(
-    "County:", NAME,
-    "<br>Analyte:", analyte,
-    "<br>Hazard Contribution:", round(total_hazard_analyte, 2)
+# Identify dominant analyte per county for tooltip
+dominant_per_county <- county_analytes_top |>
+  group_by(NAME) |>
+  slice_max(order_by = total_hazard_analyte, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  rename(dominant_analyte = analyte,
+         dominant_hazard = total_hazard_analyte)
+
+# Keep only dominant info for tooltip
+county_analytes_top <- county_analytes_top |>
+  left_join(dominant_per_county, by = "NAME")
+
+# Create stacked bar plot with analyte contributions (no labels on bars)
+p_decomposition <- ggplot(
+  county_analytes_top,
+  aes(
+    x = NAME,
+    y = total_hazard_analyte,
+    fill = analyte,
+    text = paste(
+      "<b>County:</b>", NAME,
+      "<br><b>Dominant Analyte:</b>", dominant_analyte,
+      "<br><b>Contribution:</b>", round(dominant_hazard, 2)
+    )
   )
-)) +
-  geom_col(width = 0.7) +
-  coord_flip() +
-  scale_fill_viridis_d(option = "viridis", end = 0.9) +
+) +
+  geom_col(width = 0.7, position = "stack") +
+  scale_fill_viridis_d(option = "cividis", end = 0.9) +  # color-blind friendly
   labs(
-    title = "Top 10 Counties with Hazard Index > 1",
+    title = "Hazard Index Decomposition for Top Counties",
     x = "County",
-    y = "Hazard Index by Analyte",
+    y = "Hazard Index Contribution",
     fill = "Analyte",
     caption = "Data source: Michigan PFAS Action Response Team (MPART)"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
 
-# Convert to interactive Plotly chart
-ggplotly(p_hazard, tooltip = "text")
-```
-
-```{r}
-public_water_max_long |>
-  arrange(desc(Hazard_Index)) |>
-  slice_head(n = 20)
-
+# Convert to interactive Plotly chart with automatic hover
+ggplotly(p_decomposition, tooltip = "text") |>
+  onRender(js_auto_hover) |>
+  layout(
+    hoverlabel = list(
+      bgcolor = "yellow",
+      font = list(color = "black", size = 12),
+      bordercolor = "orange"
+    )
+  )
 ```
 
 ```{r}
@@ -462,56 +619,300 @@ mutate(system_type = recode(system_type,
   ))
 ```
 
-### Hazard Plot 2
+### System Analysis
 #### Hazard Index per System
 ```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
-# Prepare unique values and keep only hazard analytes
-unique_values <- public_water_max_long |>
-  distinct(hex_id, system_name, analyte, analyte_value) |>
-  filter(analyte %in% hazard_analytes) |>        # remove non-hazard analytes
-  mutate(system_name = tolower(system_name))
-
-# Aggregate total analyte value by system name
-total_by_system <- unique_values |>
+# Aggregate analyte-level hazard contributions by system
+system_analytes <- public_water_max_long |>
+  filter(
+    Hazard_Index > 1,
+    !is.na(analyte),
+    analyte %in% hazard_analytes,
+    !is.na(analyte_value),
+    !is.na(system_name)
+  ) |>
+  mutate(
+    system_name = tolower(system_name),
+    analyte_hazard = case_when(
+      analyte == "HFPODA" ~ analyte_value / 10,
+      analyte == "PFNA"   ~ analyte_value / 10,
+      analyte == "PFBS"   ~ analyte_value / 2000,
+      analyte == "PFHxS"  ~ analyte_value / 10
+    )
+  ) |>
   group_by(system_name, analyte) |>
-  summarise(total_value = sum(analyte_value, na.rm = TRUE), .groups = "drop")
+  summarise(
+    total_hazard_analyte = sum(analyte_hazard, na.rm = TRUE),
+    .groups = "drop"
+  )
 
-# Identify top 10 systems by total hazard
-top_systems <- total_by_system |>
+# Compute total hazard per system to identify top systems
+system_total <- system_analytes |>
   group_by(system_name) |>
-  summarise(total_hazard = sum(total_value, na.rm = TRUE), .groups = "drop") |>
-  ungroup() |>
+  summarise(
+    total_hazard = sum(total_hazard_analyte, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
   arrange(desc(total_hazard)) |>
   slice_head(n = 10)
 
-# Filter for top 10 systems and order factor levels
-plot_data <- total_by_system |>
-  filter(system_name %in% top_systems$system_name) |>
-  mutate(system_name = factor(system_name, levels = top_systems$system_name))
+# Filter analytes to top systems
+system_analytes_top <- system_analytes |>
+  filter(system_name %in% system_total$system_name) |>
+  mutate(
+    system_name = factor(system_name, levels = system_total$system_name)
+  )
 
-# Create ggplot object with interactive tooltip (stacked bars)
-p_total <- ggplot(plot_data, aes(x = system_name, y = total_value, fill = analyte,
-                                 text = paste("System:", system_name,
-                                              "<br>Analyte:", analyte,
-                                              "<br>Total Value:", round(total_value, 2)))) +
-  geom_col(width = 0.7, position = "stack") +  # Stacked bar plot
-  scale_fill_viridis_d(option = "plasma") +    # Color scale
-  labs(title = "Total PFAS Hazard by Top 10 Systems",
-       x = "System Name", y = "Total Hazard Value (ppt)", fill = "Analyte",
-       caption = "Data source: Michigan PFAS Action Response Team (MPART)") +
+# Identify dominant analyte per system
+dominant_per_system <- system_analytes_top |>
+  group_by(system_name) |>
+  slice_max(order_by = total_hazard_analyte, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  rename(dominant_analyte = analyte,
+         dominant_hazard = total_hazard_analyte) |>
+  select(system_name, dominant_analyte, dominant_hazard)
+
+# Merge dominant info back for tooltip
+system_analytes_top <- system_analytes_top |>
+  left_join(dominant_per_system, by = "system_name")
+
+# Create stacked hazard index contribution plot with tooltip showing only dominant analyte
+p_system_hazard <- ggplot(
+  system_analytes_top,
+  aes(
+    x = system_name,
+    y = total_hazard_analyte,
+    fill = analyte,
+    text = paste(
+      "<b>System:</b>", system_name,
+      "<br><b>Dominant Analyte:</b>", dominant_analyte,
+      "<br><b>Contribution:</b>", round(dominant_hazard, 2)
+    )
+  )
+) +
+  geom_col(width = 0.7, position = "stack") +
+  scale_fill_viridis_d(option = "viridis", end = 0.9) +
+  labs(
+    title = "Hazard Index Decomposition for Top Systems",
+    x = "System Name",
+    y = "Hazard Index",
+    fill = "Analyte",
+    caption = "Data source: Michigan PFAS Action Response Team (MPART)"
+  ) +
   theme_minimal() +
-  theme(legend.position = "right", axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
 
-# Convert ggplot to interactive Plotly object
-ggplotly(p_total, tooltip = "text")
+# Convert to interactive Plotly chart with automatic hover
+ggplotly(p_system_hazard, tooltip = "text") |>
+  onRender(js_auto_hover) |>
+  layout(
+    hoverlabel = list(
+      bgcolor = "lightyellow",
+      font = list(color = "black", size = 12),
+      bordercolor = "orange"
+    )
+  )
 
 ```
 
+```{r}
+# Summarize total hazard index per system type
+summary_table <- public_water_max_long |>
+  distinct(system_type, hex_id, Hazard_Index) |>  
+  group_by(system_type) |>
+  summarise(
+    total_hazard = sum(Hazard_Index, na.rm = TRUE),
+    n_sites = n(),
+    .groups = "drop"
+  ) |>
+  # Round numeric columns to 2 decimal places
+  mutate(across(where(is.numeric), ~ round(.x, 2))) |>
+  arrange(desc(total_hazard))
 
-### Hazard Plot 3
+# Assign a unique ID for reactable
+tbl_id <- "system_type_hazard_table"
+
+# Create the interactive table with uppercase headers
+rt <- reactable(
+  summary_table,
+  elementId = tbl_id,
+  columns = list(
+    system_type = colDef(name = "SYSTEM TYPE"),
+    total_hazard = colDef(name = "TOTAL HAZARD"),
+    n_sites = colDef(name = "N SITES")
+  ),
+  searchable = TRUE,
+  filterable = TRUE,
+  showPageSizeOptions = TRUE,
+  defaultPageSize = 10,
+  highlight = TRUE,
+  bordered = TRUE,
+  striped = TRUE
+)
+
+# Create download link-style button in top-right
+download_btn <- tags$button(
+  "Download CSV",
+  onclick = sprintf("Reactable.downloadDataCSV('%s', 'total_hazard_system_type.csv')", tbl_id),
+  style = "
+    background: none;
+    border: none;
+    color: #0073e6;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 0.9em;
+    float: right;
+    margin-bottom: 5px;
+  "
+)
+
+# Display table with download link above it
+browsable(tagList(download_btn, rt))
+```
+
+### System_Type Analysis
+#### System Type Composition and decomposed contribution
+
+```{r}
+# Aggregate hazard contributions by system type
+system_analytes_top <- public_water_max_long |>
+  filter(
+    Hazard_Index > 1,
+    !is.na(analyte),
+    analyte %in% hazard_analytes,
+    !is.na(system_short)
+  ) |>
+  mutate(
+    analyte_hazard = case_when(
+      analyte == "HFPODA" ~ analyte_value / 10,
+      analyte == "PFNA"   ~ analyte_value / 10,
+      analyte == "PFBS"   ~ analyte_value / 2000,
+      analyte == "PFHxS"  ~ analyte_value / 10
+    )
+  ) |>
+  group_by(system_short, analyte) |>
+  summarise(
+    total_hazard_analyte = sum(analyte_hazard, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Compute total hazard per system_short and keep top 15
+system_total <- system_analytes_top |>
+  group_by(system_short) |>
+  summarise(total_hazard = sum(total_hazard_analyte, na.rm = TRUE), .groups = "drop") |>
+  arrange(desc(total_hazard)) |>
+  slice_head(n = 15)
+
+system_analytes_top <- system_analytes_top |>
+  filter(system_short %in% system_total$system_short) |>
+  mutate(system_short = factor(system_short, levels = system_total$system_short))
+
+# Compute dominant analyte per system_short for tooltip
+dominant_per_system <- system_analytes_top |>
+  group_by(system_short) |>
+  slice_max(order_by = total_hazard_analyte, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  rename(dominant_analyte = analyte,
+         dominant_hazard = total_hazard_analyte) |>
+  select(system_short, dominant_analyte, dominant_hazard)
+
+# Merge dominant info back
+system_analytes_top <- system_analytes_top |>
+  left_join(dominant_per_system, by = "system_short")
+
+# Create stacked bar plot with tooltip showing only dominant analyte + contribution
+p_system_hazard <- ggplot(
+  system_analytes_top,
+  aes(
+    x = system_short,
+    y = total_hazard_analyte,
+    fill = analyte,
+    text = paste(
+      "<br><b>Dominant Analyte:</b>", dominant_analyte,
+      "<br><b>Contribution:</b>", round(dominant_hazard, 2)
+    )
+  )
+) +
+  geom_col(width = 0.7, position = "stack") +
+  scale_fill_viridis_d(option = "cividis", end = 0.9) +
+  labs(
+    title = "Hazard Index Decomposition for Top System Types",
+    x = "System Type",
+    y = "Hazard Index",
+    fill = "Analyte",
+    caption = "Data source: Michigan PFAS Action Response Team (MPART)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+# Convert to interactive Plotly chart with JS auto-hover
+ggplotly(p_system_hazard, tooltip = "text") |>
+  onRender(js_auto_hover) |>
+  layout(
+    hoverlabel = list(
+      bgcolor = "mediumseagreen",
+      font = list(color = "black", size = 12),
+      bordercolor = "orange"
+    )
+  )
+
+```
+
+```{r}
+# Filter system_type_table for top systems in the hazard plot
+interactive_system_table <- system_type_map |>
+  filter(short_name %in% system_total$system_short)
+
+tbl_id <- "system_type_table"
+
+# Create interactive table
+rt_system <- reactable(
+  interactive_system_table,
+  elementId = tbl_id,
+  searchable = TRUE,
+  filterable = TRUE,
+  showPageSizeOptions = TRUE,
+  defaultPageSize = 10,
+  highlight = TRUE,
+  bordered = TRUE,
+  striped = TRUE,
+  columns = list(
+    short_name = colDef(name = "SHORT NAME"),
+    full_name  = colDef(name = "FULL DESCRIPTIVE NAME")
+  )
+)
+
+# Create download button
+download_btn <- tags$button(
+  "Download CSV",
+  onclick = sprintf("Reactable.downloadDataCSV('%s', 'system_type_table.csv')", tbl_id),
+  style = "
+    background: none;
+    border: none;
+    color: #0073e6;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 0.9em;
+    float: right;
+    margin-bottom: 5px;
+  "
+)
+
+# Display table with download button
+browsable(tagList(download_btn, rt_system))
+
+```
+
+### Site Analysis
 #### Mean Hazard Index per Site
 ```{r}
 # Filter merged_data for Hazard_Index > 1 and remove NA types
@@ -522,43 +923,61 @@ hazard_data <- merged_data |>
 # Aggregate mean Hazard_Index and count of sites by site type
 mean_by_type <- hazard_data |>
   group_by(type) |>
-  summarise(mean_hazard = mean(Hazard_Index, na.rm = TRUE),
-            n_sites = n(),
-            .groups = "drop")
+  summarise(
+    mean_hazard = mean(Hazard_Index, na.rm = TRUE),
+    n_sites = n(),
+    .groups = "drop"
+  )
 
-# Order types by mean hazard descending and get top 10
+# Order types by mean hazard descending and get top 15
 top_types <- mean_by_type |>
   arrange(desc(mean_hazard)) |>
-  slice_head(n = 10)
+  slice_head(n = 15)
 
 # Prepare plot data with factor levels for ordering
 plot_data <- mean_by_type |>
   filter(type %in% top_types$type) |>
   mutate(type = factor(type, levels = top_types$type))
 
-# Create ggplot object
-p <- ggplot(plot_data, aes(x = type, y = mean_hazard, fill = type,
-                           text = paste("Site Type:", type,
-                                        "<br>Mean Hazard Index:", round(mean_hazard, 2),
-                                        "<br>Number of Sites:", n_sites))) +
+# Create ggplot object with tooltip text
+p <- ggplot(plot_data, aes(
+  x = type, 
+  y = mean_hazard, 
+  fill = type,
+  text = paste("<br><b>Mean Hazard Index:</b>", round(mean_hazard, 2),
+               "<br><b>Number of Sites:</b>", n_sites)
+)) +
   geom_col(position = position_dodge(width = 0.7), width = 0.7) +
   scale_fill_viridis_d(option = "viridis") +
-  labs(title = "Mean Hazard Index by Site Type (Hazard_Index > 1)",
-       x = "Site Type",
-       y = "Mean Hazard Index (ppt)",
-       fill = "Site Type",
-       caption = "Data source: Michigan PFAS Action Response Team (MPART)",
-       subtitle = "Numbers above bars indicate number of sites per type") +
+  labs(
+    title = "Mean Hazard Index by Site Type (Hazard_Index > 1)",
+    x = "Site Type",
+    y = "Mean Hazard Index (ppt)",
+    fill = "Site Type",
+    caption = "Data source: Michigan PFAS Action Response Team (MPART)"
+  ) +
   theme_minimal() +
-  theme(legend.position = "right",
-        axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 
-# Convert to interactive Plotly object with hover tooltips
-ggplotly(p, tooltip = "text")
+# Convert to interactive Plotly object with cycling tooltip
+ggplotly(p, tooltip = "text") |>
+  onRender("
+    function(el) {
+      var totalPoints = el.data[0].x.length;
+      var i = 0;
+      setInterval(function() {
+        // Show tooltip for current bar
+        Plotly.Fx.hover(el, [{ curveNumber: 0, pointNumber: i }], 'xy');
+        i = (i + 1) % totalPoints;
+      }, 2000);  // cycle every 2 seconds
+    }
+  ")
 ```
 
-### Metrics Table
-#### Site_Type Metrics
+
 ```{r}
 # Visualizing the type of site by the composition of 4 main analytes with the hazard index
 # Filter merged_data for Hazard_Index > 1, remove NA types, keep only main analytes
@@ -637,33 +1056,86 @@ browsable(tagList(download_btn, rt))
 
 ```
 
-##### System_Type Metrics
+### Total Hazard Composition
+#### Analyte Composition
+```{r}
+# Define main hazard analytes
+hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
+
+# Aggregate analyte-level hazard contributions across all hexes
+total_analyte_hazard <- public_water_max_long |>
+  filter(analyte %in% hazard_analytes) |>           
+  mutate(analyte_hazard = case_when(
+    analyte == "HFPODA" ~ analyte_value / 10,
+    analyte == "PFNA"   ~ analyte_value / 10,
+    analyte == "PFBS"   ~ analyte_value / 2000,
+    analyte == "PFHxS"  ~ analyte_value / 10
+  )) |>
+  group_by(analyte) |>
+  summarise(total_contribution = sum(analyte_hazard, na.rm = TRUE),
+            .groups = "drop") |>
+  arrange(desc(total_contribution)) |>
+  mutate(label = paste0(analyte, " (", round(total_contribution / sum(total_contribution) * 100, 1), "%)"))
+
+# Create pie chart (all slices start un-pulled)
+p_pie <- plot_ly(
+  total_analyte_hazard,
+  labels = ~label,
+  values = ~total_contribution,
+  type = 'pie',
+  textinfo = 'label',
+  insidetextorientation = 'radial',
+  pull = 0,  # initially all slices not pulled
+  marker = list(line = list(color = '#FFFFFF', width = 1))
+) %>%
+  layout(
+    title = "Decomposed Hazard Index Contributions by Analyte",
+    showlegend = FALSE
+  )
+
+# JS code to pull slices in turns
+js_auto_pull <- "
+function(el, x) {
+  var totalSlices = el.data[0].labels.length;
+  var pulls = Array(totalSlices).fill(0);
+  var i = 0;
+  setInterval(function() {
+    pulls = Array(totalSlices).fill(0);
+    pulls[i] = 0.15; // pull current slice
+    Plotly.restyle(el, {'pull': [pulls]});
+    i = (i + 1) % totalSlices;
+  }, 2000);
+}
+"
+
+# Attach JS to pie chart
+p_pie <- htmlwidgets::onRender(p_pie, js_auto_pull)
+
+p_pie
+
+```
 
 ```{r}
-# Summarize total hazard index per system type
-summary_table <- public_water_max_long |>
-  distinct(system_type, hex_id, Hazard_Index) |>  
-  group_by(system_type) |>
-  summarise(
-    total_hazard = sum(Hazard_Index, na.rm = TRUE),
-    n_sites = n(),
-    .groups = "drop"
-  ) |>
-  # Round numeric columns to 2 decimal places
-  mutate(across(where(is.numeric), ~ round(.x, 2))) |>
-  arrange(desc(total_hazard))
+# Prepare the metrics table from public_water_max
+metrics_table <- public_water_wide |>
+  select(hex_id, sample_date, Hazard_Index, HFPODAResult, PFNAResult, PFBSResult, PFHxSResult) |>
+  arrange(desc(Hazard_Index))  # Optional: sort by hazard
 
 # Assign a unique ID for reactable
-tbl_id <- "system_type_hazard_table"
+tbl_id <- "public_water_metrics_table"
 
 # Create the interactive table with uppercase headers
 rt <- reactable(
-  summary_table,
+  metrics_table,
   elementId = tbl_id,
   columns = list(
-    system_type = colDef(name = "SYSTEM TYPE"),
-    total_hazard = colDef(name = "TOTAL HAZARD"),
-    n_sites = colDef(name = "N SITES")
+    hex_id = colDef(name = "HEX ID"),
+    sample_date = colDef(name = "SAMPLE DATE"),
+    Hazard_Index = colDef(name = "HAZARD INDEX"),
+    HFPODAResult = colDef(name = "HFPO-DA RESULT"),
+    PFNAResult = colDef(name = "PFNA RESULT"),
+    PFBSResult = colDef(name = "PFBS RESULT"),
+    PFHxSResult = colDef(name = "PFHxS RESULT")
   ),
   searchable = TRUE,
   filterable = TRUE,
@@ -677,7 +1149,7 @@ rt <- reactable(
 # Create download link-style button in top-right
 download_btn <- tags$button(
   "Download CSV",
-  onclick = sprintf("Reactable.downloadDataCSV('%s', 'total_hazard_system_type.csv')", tbl_id),
+  onclick = sprintf("Reactable.downloadDataCSV('%s', 'public_water_metrics.csv')", tbl_id),
   style = "
     background: none;
     border: none;
@@ -692,4 +1164,116 @@ download_btn <- tags$button(
 
 # Display table with download link above it
 browsable(tagList(download_btn, rt))
+```
+
+### Temporal Analysis
+#### Trends in Hazard Index and Analytes
+
+```{r}
+# Ensure sample_date is Date
+metrics_table <- metrics_table %>%
+  mutate(sample_date = as.Date(sample_date))
+
+# Pivot to long format for analytes
+temporal_long <- metrics_table %>%
+  pivot_longer(
+    cols = c(HFPODAResult, PFNAResult, PFBSResult, PFHxSResult),
+    names_to = "analyte",
+    values_to = "value"
+  ) %>%
+  mutate(
+    analyte = recode(analyte,
+                     "HFPODAResult" = "HFPO-DA",
+                     "PFNAResult" = "PFNA",
+                     "PFBSResult" = "PFBS",
+                     "PFHxSResult" = "PFHxS"),
+    month = floor_date(sample_date, "month")
+  )
+
+# Aggregate mean value per month per analyte
+temporal_summary <- temporal_long %>%
+  group_by(month, analyte) %>%
+  summarise(mean_value = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(month)
+
+# Plot temporal trends as line plot
+p_temporal_line <- ggplot(
+  temporal_summary,
+  aes(
+    x = month,
+    y = mean_value,
+    color = analyte,
+    group = analyte,
+    text = paste0("Month: ", month,
+                  "<br>Analyte: ", analyte,
+                  "<br>Mean Value: ", round(mean_value, 2))
+  )
+) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_color_viridis_d(option = "cividis") +
+  labs(
+    title = "Temporal Trends of PFAS Analytes in Public Water",
+    x = "Year",
+    y = "Mean Hazard Contribution",
+    color = "Analyte"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Convert to interactive Plotly plot
+ggplotly(p_temporal_line, tooltip = "text")
+
+```
+
+```{r}
+# Prepare metrics table
+metrics_table <- public_water_wide |>
+  select(hex_id, sample_date, Hazard_Index, HFPODAResult, PFNAResult, PFBSResult, PFHxSResult) |>
+  mutate(sample_date = as.Date(sample_date)) |>
+  arrange(sample_date)
+
+# Aggregate total hazard by month
+hazard_temporal <- metrics_table |>
+  mutate(month = floor_date(sample_date, unit = "month")) |>
+  group_by(month) |>
+  summarise(total_hazard = sum(Hazard_Index, na.rm = TRUE), .groups = "drop")
+
+# Filter 2018-2020
+hazard_2018_2020 <- hazard_temporal |> filter(year(month) >= 2018 & year(month) <= 2020)
+
+# Plot
+p1 <- ggplot(hazard_2018_2020, aes(x = month, y = total_hazard)) +
+  geom_line(color = "darkorange", size = 1.2) +
+  geom_point(aes(text = paste0("Month: ", format(month, "%b %Y"),
+                               "<br>Total Hazard: ", round(total_hazard, 2))),
+             color = "darkred", size = 2) +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year") +
+  labs(title = "Total Hazard Index: 2018–2020",
+       x = "Year",
+       y = "Total Hazard Index") +
+  theme_minimal()
+
+ggplotly(p1, tooltip = "text")
+
+```
+
+```{r}
+# Filter 2021-2023
+hazard_2021_2023 <- hazard_temporal |> filter(year(month) >= 2021 & year(month) <= 2023)
+
+# Plot
+p2 <- ggplot(hazard_2021_2023, aes(x = month, y = total_hazard)) +
+  geom_line(color = "darkorange", size = 1.2) +
+  geom_point(aes(text = paste0("Month: ", format(month, "%b %Y"),
+                               "<br>Total Hazard: ", round(total_hazard, 2))),
+             color = "darkred", size = 2) +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year") +
+  labs(title = "Total Hazard Index: 2021–2023",
+       x = "Year",
+       y = "Total Hazard Index") +
+  theme_minimal()
+
+ggplotly(p2, tooltip = "text")
+
 ```

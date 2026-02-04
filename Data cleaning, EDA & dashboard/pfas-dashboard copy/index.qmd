@@ -38,5 +38,5 @@ Per- and polyfluoroalkyl substances (PFAS) are a large group of man-made chemica
 
 **Technologies Used 🛠️**  
 - *Frontend:* Leaflet, Plotly 
-- *Backend:* R, Quarto, Markdown  
+- *Backend:* R, Quarto, Markdown, JavaScript  
 - *Hosting:* GitHub Pages  
