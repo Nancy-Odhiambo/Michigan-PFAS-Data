@@ -411,59 +411,6 @@ p_bar
 ```
 
 ```{r}
-# Prepare the metrics table from public_water_max
-metrics_table <- public_water_wide |>
-  select(hex_id, sample_date, Hazard_Index, HFPODAResult, PFNAResult, PFBSResult, PFHxSResult) |>
-  arrange(desc(Hazard_Index))  # Optional: sort by hazard
-
-# Assign a unique ID for reactable
-tbl_id <- "public_water_metrics_table"
-
-# Create the interactive table with uppercase headers
-rt <- reactable(
-  metrics_table,
-  elementId = tbl_id,
-  columns = list(
-    hex_id = colDef(name = "HEX ID"),
-    sample_date = colDef(name = "SAMPLE DATE"),
-    Hazard_Index = colDef(name = "HAZARD INDEX"),
-    HFPODAResult = colDef(name = "HFPO-DA RESULT"),
-    PFNAResult = colDef(name = "PFNA RESULT"),
-    PFBSResult = colDef(name = "PFBS RESULT"),
-    PFHxSResult = colDef(name = "PFHxS RESULT")
-  ),
-  searchable = TRUE,
-  filterable = TRUE,
-  showPageSizeOptions = TRUE,
-  defaultPageSize = 10,
-  highlight = TRUE,
-  bordered = TRUE,
-  striped = TRUE
-)
-
-# Create download link-style button in top-right
-download_btn <- tags$button(
-  "Download CSV",
-  onclick = sprintf("Reactable.downloadDataCSV('%s', 'public_water_metrics.csv')", tbl_id),
-  style = "
-    background: none;
-    border: none;
-    color: #0073e6;
-    text-decoration: underline;
-    cursor: pointer;
-    font-size: 0.9em;
-    float: right;
-    margin-bottom: 5px;
-  "
-)
-
-# Display table with download link above it
-browsable(tagList(download_btn, rt))
-```
-
-### Maps
-#### Michigan PFAS Map
-```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
@@ -582,14 +529,18 @@ leaflet(hazard_sites_full) %>%
 
 ```
 
-```{r}
 
+### Maps
+
+#### Michigan PFAS Map
+```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
 # Load Michigan counties shapefile
 mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) %>%
-  filter(STATEFP == "26")
+  filter(STATEFP == "26") %>%
+  st_transform(4326)   
 
 # Prepare analyte-wide data
 analyte_wide <- public_water_max_long %>%
@@ -601,62 +552,192 @@ analyte_wide <- public_water_max_long %>%
     values_fill = 0
   )
 
-# Prepare hazard sites with Hazard_Index > 1
+# Prepare hazard sites (sf)
 hazard_sites_full <- public_water_max_long %>%
   filter(Hazard_Index > 1) %>%
   distinct(hex_id, system_name, system_type, Hazard_Index, longitude, latitude) %>%
+  rename(type = system_type) %>%
   left_join(analyte_wide, by = "hex_id") %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
-  mutate(Hazard_Index = as.numeric(Hazard_Index))
+  mutate(
+    Hazard_Index = as.numeric(Hazard_Index),
+    popup_label = paste0(
+      "<b>System Name:</b> ", system_name, "<br>",
+      "<b>Type:</b> ", type, "<br>",
+      "<b>Hazard Index:</b> ", round(Hazard_Index, 2)
+    )
+  )
 
-# Define color palette and radius scaling
+# Color palette + scaled radius
 max_radius <- 20
+
 hazard_pal <- colorNumeric(
   palette = "YlOrRd",
-  domain = c(0, max(hazard_sites_full$Hazard_Index, na.rm = TRUE))
+  domain = hazard_sites_full$Hazard_Index
 )
+
 hazard_sites_full <- hazard_sites_full %>%
-  mutate(scaled_radius = sqrt(Hazard_Index / max(Hazard_Index, na.rm = TRUE)) * max_radius)
+  mutate(
+    scaled_radius = sqrt(Hazard_Index / max(Hazard_Index, na.rm = TRUE)) * max_radius
+  )
 
-# Create popups
-hazard_popup <- hazard_sites_full %>%
-  mutate(popup = paste0(
-    "<b>System Name:</b> ", system_name, "<br>",
-    "<b>Type:</b> ", system_type, "<br>",
-    "<b>Hazard Index:</b> ", round(Hazard_Index, 2), "<br>",
-    "<b>HFPODA:</b> ", round(HFPODA, 2), "<br>",
-    "<b>PFNA:</b> ", round(PFNA, 2), "<br>",
-    "<b>PFBS:</b> ", round(PFBS, 2), "<br>",
-    "<b>PFHxS:</b> ", round(PFHxS, 2)
-  ))
+# Build searchable field (use system_name instead of type)
+hazard_sites_full <- hazard_sites_full %>%
+  mutate(
+    search_field = system_name
+  )
 
-# Custom HTML legend
-legend_values <- c(0.25, 0.5, 0.75, 1)
-legend_radius <- sqrt(legend_values) * max_radius
-legend_colors <- hazard_pal(legend_values * max(hazard_sites_full$Hazard_Index, na.rm = TRUE))
-legend_html <- paste0(
-  "<div style='line-height:1.5;background:white;padding:10px;border-radius:5px;
-                      box-shadow:0 0 5px rgba(0,0,0,0.3);width:auto;'>",
-  "<h4 style='margin:0;color:#4B0082;'>Hazard Index</h4>",
-  "<div style='display:flex;align-items:center;justify-content:space-around;'>",
-  paste0(
-    sapply(seq_along(legend_values), function(i) {
-      paste0(
-        "<svg height='", max(legend_radius)*2, "' width='", max(legend_radius)*2, "' style='margin-right:5px;'>",
-        "<circle cx='", max(legend_radius), "' cy='", max(legend_radius),
-        "' r='", legend_radius[i], "' fill='", legend_colors[i],
-        "' fill-opacity='0.7' stroke='black' stroke-width='0.5'/>",
-        "</svg>"
-      )
-    }),
-    collapse = ""
-  ),
-  "</div>",
-  "</div>"
+# SharedData for Crosstalk
+shared_data <- SharedData$new(
+  hazard_sites_full,
+  key = ~hex_id,
+  group = "hazard"
 )
 
-# Wrap hazard sites in SharedData for filtering
-shared_sites <- SharedData$new(hazard_sites_full)
+# FILTER WIDGET (Hazard Index)
+filter_widget <- filter_slider(
+  id = "hazard_filter",
+  label = "Filter by Hazard Index",
+  sharedData = shared_data,
+  column = ~Hazard_Index,
+  min = min(hazard_sites_full$Hazard_Index, na.rm = TRUE),
+  max = max(hazard_sites_full$Hazard_Index, na.rm = TRUE),
+  step = 0.1
+)
+
+# LEAFLET MAP
+map_widget <- shared_data %>%
+  leaflet() %>%
+  setView(lng = -84.5, lat = 44.5, zoom = 6) %>%
+
+  addProviderTiles(providers$CartoDB.Positron) %>%
+
+  addPolygons(
+    data = mi_counties,
+    fillColor = "grey",
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.3
+  ) %>%
+
+  addCircleMarkers(
+    radius = ~scaled_radius,
+    fillColor = ~hazard_pal(Hazard_Index),
+    color = "black",
+    fillOpacity = 0.7,
+    stroke = TRUE,
+    weight = 0.5,
+    popup = ~popup_label,
+    label = ~lapply(popup_label, HTML),
+    layerId = ~search_field,
+    group = "HazardSites"
+  ) %>%
+
+  addLabelOnlyMarkers(
+    lng = ~st_coordinates(geometry)[,1],
+    lat = ~st_coordinates(geometry)[,2],
+    label = ~round(Hazard_Index, 1),
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      textOnly = TRUE,
+      style = list(
+        "color" = "black",
+        "font-size" = "10px",
+        "font-weight" = "bold",
+        "text-shadow" = "1px 1px 2px white"
+      )
+    )
+  ) %>%
+
+  addSearchFeatures(
+    targetGroups = "HazardSites",
+    options = searchFeaturesOptions(
+      zoom = 11,
+      openPopup = TRUE,
+      firstTipSubmit = TRUE,
+      autoCollapse = TRUE,
+      hideMarkerOnCollapse = TRUE,
+      propertyName = "layerId",
+      textPlaceholder = "Search by system name..."
+    )
+  ) %>%
+
+  addControl(
+    html = htmltools::div(
+      id = "filter-container",
+      style = "background: rgba(255,255,255,0.85); padding: 10px; border-radius: 5px;",
+      filter_widget
+    ),
+    position = "topright"
+  ) %>%
+
+  onRender("
+    function(el, x) {
+      var container = document.getElementById('filter-container');
+      if (container) {
+        L.DomEvent.disableScrollPropagation(container);
+        L.DomEvent.disableClickPropagation(container);
+      }
+    }
+  ")
+
+map_widget
+
+
+```
+
+```{r}
+
+# Convert pfas_sites to sf
+pfas_sites_sf <- pfas_sites %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  mutate(
+    type = str_replace_all(type, "mlitary", "military"),
+    type = str_to_title(type)
+  )
+
+# Load Michigan counties shapefile
+mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) %>%
+  filter(STATEFP == "26") %>%
+  st_transform(4326)
+
+# Viridis discrete palette for type
+pal <- colorFactor("viridis", pfas_sites_sf$type)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+
+  # Counties (STATIC GREY — DO NOT COLOR BY TYPE)
+  addPolygons(
+    data = mi_counties,
+    fillColor = "grey90",
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.7
+  ) %>%
+
+  # PFAS sites colored by TYPE
+  addCircleMarkers(
+    data = pfas_sites_sf,
+    radius = 4,
+    fillColor = ~pal(type),   # <-- THIS is the correct coloring
+    color = "black",
+    weight = 0.5,
+    fillOpacity = 0.8,
+    popup = ~paste0(
+      "<b>Facility:</b> ", facility, "<br>",
+      "<b>Type:</b> ", type, "<br>",
+      "<b>County:</b> ", county
+    )
+  ) %>%
+
+  # Legend
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = pfas_sites_sf$type,
+    title = "Site Type"
+  )
 
 ```
 
@@ -773,6 +854,7 @@ p_overall <- plot_ly(
 p_overall
 
 ```
+
 ```{r}
 # JS for automatic bar hover
 js_auto_hover <- "
@@ -898,7 +980,6 @@ p_overall
 metrics_table <- plot_data %>%
   group_by(NAME) %>%
   summarise(
-    Analytes = paste(sort(unique(analyte)), collapse = ", "),
     `Dominant Analyte` = first(dominant_analyte),
     `Dominant Contribution` = first(dominant_hazard),
     `Total Hazard Index` = first(total_hazard),
@@ -1069,32 +1150,92 @@ ggplotly(p_system_hazard, tooltip = "text") |>
   )
 
 ```
-
 ```{r}
-# Summarize total hazard index per system type
-summary_table <- public_water_max_long |>
-  distinct(system_type, hex_id, Hazard_Index) |>  
-  group_by(system_type) |>
+# -------------------------------
+# Prepare metrics table for top systems
+
+# Define main hazard analytes
+hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
+
+# Aggregate analyte-level hazard contributions per system
+system_analytes <- public_water_max_long |>
+  filter(
+    Hazard_Index > 1,
+    !is.na(analyte),
+    analyte %in% hazard_analytes,
+    !is.na(analyte_value),
+    !is.na(system_name)
+  ) |>
+  mutate(
+    analyte_hazard = case_when(
+      analyte == "HFPODA" ~ analyte_value / 10,
+      analyte == "PFNA"   ~ analyte_value / 10,
+      analyte == "PFBS"   ~ analyte_value / 2000,
+      analyte == "PFHxS"  ~ analyte_value / 10
+    )
+  ) |>
+  group_by(system_name, analyte) |>
   summarise(
-    total_hazard = sum(Hazard_Index, na.rm = TRUE),
-    n_sites = n(),
+    total_hazard_analyte = sum(analyte_hazard, na.rm = TRUE),
+    n_sites = n_distinct(hex_id),
+    .groups = "drop"
+  )
+
+# Compute total hazard per system to identify top systems
+system_total <- system_analytes |>
+  group_by(system_name) |>
+  summarise(
+    total_hazard = sum(total_hazard_analyte, na.rm = TRUE),
     .groups = "drop"
   ) |>
-  # Round numeric columns to 2 decimal places
-  mutate(across(where(is.numeric), ~ round(.x, 2))) |>
-  arrange(desc(total_hazard))
+  arrange(desc(total_hazard)) |>
+  slice_head(n = 10)
 
-# Assign a unique ID for reactable
-tbl_id <- "system_type_hazard_table"
+# Identify dominant analyte per system
+dominant_per_system <- system_analytes |>
+  filter(system_name %in% system_total$system_name) |>
+  group_by(system_name) |>
+  slice_max(order_by = total_hazard_analyte, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  rename(
+    `Dominant Analyte` = analyte,
+    `Dominant Contribution` = total_hazard_analyte
+  ) |>
+  select(system_name, `Dominant Analyte`, `Dominant Contribution`)
 
-# Create the interactive table with uppercase headers
+# Prepare metrics table
+metrics_table <- system_total |>
+  filter(system_name %in% system_total$system_name) |>
+  left_join(dominant_per_system, by = "system_name") |>
+  left_join(
+    system_analytes |>
+      pivot_wider(
+        names_from = analyte,
+        values_from = total_hazard_analyte,
+        values_fill = 0
+      ) |>
+      select(system_name, all_of(hazard_analytes)),
+    by = "system_name"
+  ) |>
+  rename(System = system_name, `Total Hazard Index` = total_hazard) |>
+  arrange(desc(`Total Hazard Index`))
+
+# -------------------------------
+# Render interactive table using reactable
+tbl_id <- "system_hazard_metrics_table"
+
 rt <- reactable(
-  summary_table,
+  metrics_table,
   elementId = tbl_id,
   columns = list(
-    system_type = colDef(name = "SYSTEM TYPE"),
-    total_hazard = colDef(name = "TOTAL HAZARD"),
-    n_sites = colDef(name = "N SITES")
+    System = colDef(name = "SYSTEM"),
+    `Dominant Analyte` = colDef(name = "DOMINANT ANALYTE"),
+    `Dominant Contribution` = colDef(name = "DOMINANT CONTRIBUTION"),
+    `Total Hazard Index` = colDef(name = "TOTAL HAZARD INDEX"),
+    HFPODA = colDef(name = "HFPODA"),
+    PFNA = colDef(name = "PFNA"),
+    PFBS = colDef(name = "PFBS"),
+    PFHxS = colDef(name = "PFHxS")
   ),
   searchable = TRUE,
   filterable = TRUE,
@@ -1105,10 +1246,10 @@ rt <- reactable(
   striped = TRUE
 )
 
-# Create download link-style button in top-right
+# Download button
 download_btn <- tags$button(
   "Download CSV",
-  onclick = sprintf("Reactable.downloadDataCSV('%s', 'total_hazard_system_type.csv')", tbl_id),
+  onclick = sprintf("Reactable.downloadDataCSV('%s', 'system_hazard_metrics.csv')", tbl_id),
   style = "
     background: none;
     border: none;
@@ -1121,8 +1262,9 @@ download_btn <- tags$button(
   "
 )
 
-# Display table with download link above it
+# Display table with download button
 browsable(tagList(download_btn, rt))
+
 ```
 
 ### System_Type Analysis
@@ -1215,17 +1357,57 @@ ggplotly(p_system_hazard, tooltip = "text") |>
   )
 
 ```
-
 ```{r}
-# Filter system_type_table for top systems in the hazard plot
-interactive_system_table <- system_type_map |>
-  filter(short_name %in% system_total$system_short)
+# Step 1–5: Prepare the system hazard summary table
+system_analytes_top <- public_water_max_long %>%
+  filter(
+    Hazard_Index > 1,
+    !is.na(analyte),
+    analyte %in% hazard_analytes,
+    !is.na(system_short)
+  ) %>%
+  mutate(
+    analyte_hazard = case_when(
+      analyte == "HFPODA" ~ analyte_value / 10,
+      analyte == "PFNA"   ~ analyte_value / 10,
+      analyte == "PFBS"   ~ analyte_value / 2000,
+      analyte == "PFHxS"  ~ analyte_value / 10
+    )
+  ) %>%
+  group_by(system_short, analyte) %>%
+  summarise(total_hazard_analyte = sum(analyte_hazard, na.rm = TRUE), .groups = "drop")
 
-tbl_id <- "system_type_table"
+system_total <- system_analytes_top %>%
+  group_by(system_short) %>%
+  summarise(total_hazard = sum(total_hazard_analyte, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(total_hazard)) %>%
+  slice_head(n = 15)
 
-# Create interactive table
-rt_system <- reactable(
-  interactive_system_table,
+system_analytes_top <- system_analytes_top %>%
+  filter(system_short %in% system_total$system_short)
+
+dominant_per_system <- system_analytes_top %>%
+  group_by(system_short) %>%
+  slice_max(order_by = total_hazard_analyte, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  rename(
+    dominant_analyte = analyte,
+    dominant_hazard = total_hazard_analyte
+  ) %>%
+  select(system_short, dominant_analyte, dominant_hazard)
+
+system_hazard_agg <- system_total %>%
+  left_join(dominant_per_system, by = "system_short") %>%
+  left_join(system_type_map %>% select(short_name, full_name),
+            by = c("system_short" = "short_name")) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
+  arrange(desc(total_hazard))
+
+# Step 6: Create reactable table only (no plot)
+tbl_id <- "system_summary_table"
+
+rt_system_summary <- reactable(
+  system_hazard_agg,
   elementId = tbl_id,
   searchable = TRUE,
   filterable = TRUE,
@@ -1235,15 +1417,18 @@ rt_system <- reactable(
   bordered = TRUE,
   striped = TRUE,
   columns = list(
-    short_name = colDef(name = "SHORT NAME"),
-    full_name  = colDef(name = "FULL DESCRIPTIVE NAME")
+    full_name = colDef(name = "FULL DESCRIPTIVE NAME"),
+    system_short = colDef(name = "SHORT NAME"),
+    total_hazard = colDef(name = "TOTAL HAZARD"),
+    dominant_analyte = colDef(name = "DOMINANT ANALYTE"),
+    dominant_hazard = colDef(name = "DOMINANT HAZARD")
   )
 )
 
-# Create download button
+# Step 7: Download button
 download_btn <- tags$button(
   "Download CSV",
-  onclick = sprintf("Reactable.downloadDataCSV('%s', 'system_type_table.csv')", tbl_id),
+  onclick = sprintf("Reactable.downloadDataCSV('%s', 'system_summary.csv')", tbl_id),
   style = "
     background: none;
     border: none;
@@ -1256,10 +1441,10 @@ download_btn <- tags$button(
   "
 )
 
-# Display table with download button
-browsable(tagList(download_btn, rt_system))
-
+# Display the table with download button
+browsable(tagList(download_btn, rt_system_summary))
 ```
+
 
 ### Site Analysis
 #### Mean Hazard Index per Site
@@ -1308,7 +1493,7 @@ p <- ggplot(plot_data, aes(
   ) +
   theme_minimal() +
   theme(
-    legend.position = "right",
+    legend.position = "none",
     axis.text.x = element_text(angle = 45, hjust = 1)
   )
 
@@ -1405,7 +1590,3 @@ download_btn <- tags$button(
 browsable(tagList(download_btn, rt))
 
 ```
-
-
-### Temporal Analysis
-#### Trends in Hazard Index and Analytes
