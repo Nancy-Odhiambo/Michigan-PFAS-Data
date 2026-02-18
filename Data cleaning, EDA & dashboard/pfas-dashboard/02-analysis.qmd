@@ -411,7 +411,6 @@ p_bar <- plot_ly(
 p_bar
 ```
 
-
 ```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
@@ -441,6 +440,14 @@ hazard_sites_full <- public_water_max_long %>%
   mutate(
     Hazard_Index = as.numeric(Hazard_Index),
     search_field = system_name
+  )
+
+# LOWERCASE ONLY SYSTEM STRINGS (analytes untouched)
+hazard_sites_full <- hazard_sites_full %>%
+  mutate(
+    system_name = tolower(system_name),
+    type = tolower(type),
+    search_field = tolower(search_field)
   )
 
 # Color palette (UPDATED)
@@ -538,8 +545,8 @@ bscols(
       breaks = legend_data$Hazard_Index
     )
 )
-```
 
+```
 
 #### Michigan PFAS Map
 
