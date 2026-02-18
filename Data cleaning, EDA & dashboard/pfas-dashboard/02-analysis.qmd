@@ -330,7 +330,7 @@ public_water_max_long <- public_water_max_long |>
 
 ## Hazard Index Analysis {.tabset}
 
-### Total Hazard Composition
+### Hazard Composition
 #### Analyte Composition
 ```{r}
 # Define main hazard analytes
@@ -411,13 +411,15 @@ p_bar <- plot_ly(
 p_bar
 ```
 
+
 ```{r}
 # Define main hazard analytes
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
 
-# Load Michigan counties shapefile
+# Load Michigan counties shapefile (FIX: transform to WGS84)
 mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) %>%
-  filter(STATEFP == "26")
+  filter(STATEFP == "26") %>%
+  st_transform(4326)
 
 # Prepare analyte-wide data
 analyte_wide <- public_water_max_long %>%
@@ -436,17 +438,31 @@ hazard_sites_full <- public_water_max_long %>%
   rename(type = system_type) %>%
   left_join(analyte_wide, by = "hex_id") %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
-  mutate(Hazard_Index = as.numeric(Hazard_Index))
+  mutate(
+    Hazard_Index = as.numeric(Hazard_Index),
+    search_field = system_name
+  )
 
-# Color palette
+# Color palette (UPDATED)
 max_radius <- 20
+desired_max <- max(hazard_sites_full$Hazard_Index, na.rm = TRUE)
+max_val <- ceiling(desired_max / 5) * 5
+
 hazard_pal <- colorNumeric(
   palette = "YlOrRd",
-  domain = c(0, max(hazard_sites_full$Hazard_Index, na.rm = TRUE))
+  domain = c(0, max_val)
 )
 
+# Compute scaled radius BEFORE SharedData
 hazard_sites_full <- hazard_sites_full %>%
   mutate(scaled_radius = sqrt(Hazard_Index / max(Hazard_Index, na.rm = TRUE)) * max_radius)
+
+# Crosstalk SharedData
+shared_data <- SharedData$new(
+  hazard_sites_full,
+  key = ~hex_id,
+  group = "hazard"
+)
 
 # Popups
 hazard_popup <- hazard_sites_full %>%
@@ -460,78 +476,70 @@ hazard_popup <- hazard_sites_full %>%
     "<b>PFHxS:</b> ", round(PFHxS, 2)
   ))
 
-# Legend values (just 3 representative bubbles)
-legend_values <- c(0.25, 0.5, 1)  # fraction of max for size
-legend_radius <- sqrt(legend_values) * max_radius
-legend_colors <- hazard_pal(legend_values * max(hazard_sites_full$Hazard_Index, na.rm = TRUE))
+# Legend data for bubble legend (fixed scale of 5)
+legend_data <- tibble(
+  Hazard_Index = seq(5, max_val, by = 5)
+) %>%
+  mutate(scaled_radius = sqrt(Hazard_Index / max_val) * max_radius)
 
-# Build custom HTML legend (color + size only, horizontal layout)
-legend_html <- paste0(
-  "<div style='line-height:1.5;background:white;padding:10px;border-radius:5px;
-                      box-shadow:0 0 5px rgba(0,0,0,0.3);width:auto;'>",
-  "<h4 style='margin:0;color:#4B0082;'>Hazard Index</h4>",
-  "<div style='display:flex;align-items:center;justify-content:space-around;'>",
-  paste0(
-    sapply(seq_along(legend_values), function(i) {
-      paste0(
-        "<svg height='", max(legend_radius)*2, "' width='", max(legend_radius)*2, "' style='margin-right:5px;'>",
-        "<circle cx='", max(legend_radius), "' cy='", max(legend_radius),
-        "' r='", legend_radius[i], "' fill='", legend_colors[i],
-        "' fill-opacity='0.7' stroke='black' stroke-width='0.5'/>",
-        "</svg>"
-      )
-    }),
-    collapse = ""
-  ),
-  "</div>",
-  "</div>"
+# Crosstalk filter widget (top of page)
+filter_widget <- filter_select(
+  id = "system_filter",
+  label = "Filter by System Name",
+  sharedData = shared_data,
+  group = ~search_field
 )
 
-# Get bounding box of Michigan counties
-mi_bounds <- st_bbox(mi_counties)
-
-# Build interactive Leaflet map with custom zoom and bubble legend
-leaflet(hazard_sites_full) %>%
-  # Center on Michigan with zoomed-out view so full state fits
-  setView(lng = -84.5, lat = 44.5, zoom = 6) %>%
+# Build interactive Leaflet map with bubble legend + Crosstalk
+bscols(
+  widths = 12,   # FULL WIDTH MAP
+  filter_widget,
   
-  # Base map tiles
-  addProviderTiles(providers$CartoDB.Positron) %>%
-  
-  # Michigan county polygons
-  addPolygons(
-    data = mi_counties,
-    fillColor = "grey",
-    color = "black",
-    weight = 1,
-    fillOpacity = 0.3,
-    label = ~NAME
-  ) %>%
-  
-  # Hazard site markers
-  addCircleMarkers(
-    radius = ~scaled_radius,  # proportional to Hazard_Index
-    fillColor = ~hazard_pal(Hazard_Index),
-    color = "black",
-    fillOpacity = 0.7,
-    stroke = TRUE,
-    weight = 0.5,
-    label = lapply(hazard_popup$popup, HTML),
-    labelOptions = labelOptions(
-      direction = "auto",
-      textsize = "12px",
-      opacity = 0.9,
-      offset = c(0, -5)
+  leaflet(shared_data) %>%
+    setView(lng = -84.5, lat = 44.5, zoom = 6) %>%
+    
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    
+    addPolygons(
+      data = mi_counties,
+      fillColor = "grey",
+      color = "black",
+      weight = 1,
+      fillOpacity = 0.3,
+      label = ~NAME
+    ) %>%
+    
+    addCircleMarkers(
+      radius = ~scaled_radius,
+      fillColor = ~hazard_pal(Hazard_Index),
+      color = "black",
+      fillOpacity = 0.7,
+      stroke = TRUE,
+      weight = 0.5,
+      label = lapply(hazard_popup$popup, HTML),
+      labelOptions = labelOptions(
+        direction = "auto",
+        textsize = "12px",
+        opacity = 0.9,
+        offset = c(0, -5)
+      )
+    ) %>%
+    
+    addLegendSize(
+      values = legend_data$Hazard_Index,
+      pal = hazard_pal,
+      title = "Hazard Index",
+      baseSize = max_radius,
+      shape = "circle",
+      orientation = "vertical",
+      opacity = 1,
+      fillOpacity = 0.7,
+      position = "bottomright",
+      breaks = legend_data$Hazard_Index
     )
-  ) %>%
-  
-  # Custom HTML bubble legend (color + size only)
-  addControl(html = legend_html, position = "topright")
-
+)
 ```
 
-
-### Maps
 
 #### Michigan PFAS Map
 
@@ -689,116 +697,6 @@ map_widget <- shared_data %>%
 map_widget
 
 
-```
-
-```{r}
-#| label: hazard_bubble_map
-
-# Define main hazard analytes
-hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
-
-# Load Michigan counties shapefile
-mi_counties <- st_read("GeoFiles/cb_2018_us_county_500k.shp", quiet = TRUE) %>%
-  filter(STATEFP == "26") %>%
-  st_transform(4326)   
-
-# Prepare analyte-wide data
-analyte_wide <- public_water_max_long %>%
-  filter(analyte %in% hazard_analytes) %>%
-  select(hex_id, analyte, analyte_value) %>%
-  pivot_wider(
-    names_from = analyte,
-    values_from = analyte_value,
-    values_fill = 0
-  )
-
-# Prepare hazard sites (sf)
-hazard_sites_full <- public_water_max_long %>%
-  filter(Hazard_Index > 1) %>%
-  distinct(hex_id, system_name, system_type, Hazard_Index, longitude, latitude) %>%
-  rename(type = system_type) %>%
-  left_join(analyte_wide, by = "hex_id") %>%
-  mutate(system_name = str_to_title(str_remove(system_name, pattern = "[,] City Of"))) |> 
-  replace_na(list(system_name = "Unknown",
-                  type = "Unknown")) |> 
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
-  mutate(
-    Hazard_Index = as.numeric(Hazard_Index),
-    popup_label = paste0(
-      "<b>System Name:</b> ", system_name, "<br>",
-      "<b>Type:</b> ", type, "<br>",
-      "<b>Hazard Index:</b> ", sprintf("%.1f", Hazard_Index)
-    )
-  )
-
-# Color palette + scaled radius
-max_radius <- 20
-desired_max <- 35
-
-# Update scaled_radius calculation to use desired_max
-hazard_sites_full <- hazard_sites_full %>%
-  mutate(scaled_radius = sqrt(Hazard_Index / desired_max) * max_radius)
-
-# Create legend data with extended range and scaled radius
-legend_data <- tibble(
-  Hazard_Index = seq(5, desired_max, by = 5)
-) %>%
-  mutate(scaled_radius = sqrt(Hazard_Index / desired_max) * max_radius)
-
-hazard_pal <- colorNumeric(
-  palette = c("#e5f5f9", "#99d8c9", "#2ca25f", "#006d2c"),
-  domain = c(0, desired_max)
-)
-
-# Build searchable field
-hazard_sites_full <- hazard_sites_full %>%
-  mutate(search_field = system_name)
-
-# SharedData for Crosstalk
-shared_data <- SharedData$new(
-  hazard_sites_full,
-  key = ~hex_id,
-  group = "hazard"
-)
-
-# LEAFLET MAP
-map_widget <- hazard_sites_full %>%
-  leaflet() %>%
-  setView(lng = -84.5, lat = 44.5, zoom = 5.5) %>%
-  addProviderTiles(providers$CartoDB.Positron) %>%
-  addPolygons(
-    data = mi_counties,
-    fillColor = "grey",
-    color = "black",
-    weight = 1,
-    fillOpacity = 0.3
-  ) %>%
-  addCircleMarkers(
-    lng = ~st_coordinates(geometry)[,1],
-    lat = ~st_coordinates(geometry)[,2],
-    radius = ~scaled_radius,
-    color = ~hazard_pal(Hazard_Index),
-    fillColor = ~hazard_pal(Hazard_Index), 
-    fillOpacity = 0.7,
-    opacity = 1,
-    weight = 1,
-    popup = ~popup_label,
-    label = ~lapply(popup_label, htmltools::HTML)
-  ) |>
-  addLegendSize(
-    values = legend_data$Hazard_Index,
-    pal = hazard_pal, 
-    title = 'Hazard Index',
-    baseSize = max_radius / sqrt(desired_max / desired_max),  # Scaling factor
-    shape = 'circle', 
-    orientation = 'vertical',
-    opacity = 1, 
-    fillOpacity = 0.7, 
-    position = 'bottomright',
-    breaks = legend_data$Hazard_Index
-  )
-
-map_widget
 ```
 
 
