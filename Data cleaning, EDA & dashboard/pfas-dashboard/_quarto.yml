@@ -12,8 +12,6 @@ website:
     right:
       - text: "Project Overview"
         href: index.qmd
-      - text: "PFAS Concentrations"
-        href: PFAS-data.qmd
       - text: "Hazard Analysis"
         href: 02-analysis.qmd
       - text: "About"
