@@ -1,6 +1,6 @@
 ---
 title: "Public Water Hazard Index Analysis"
-format: html
+format: docx
 execute:
   echo: false
   warning: false
@@ -41,6 +41,7 @@ library(leaflet.extras)
 library(crosstalk)
 library(stringr)
 library(forcats)
+library(webshot2)
 
 
 
@@ -426,11 +427,38 @@ public_max_full <- get_max_concentration(
 
 Poster Workflow
 
+## Hazard Index
+
+The hazard index is a unitless metric from the Environmental Protection Agency (EPA) that summarizes the adverse health effects associated with exposure to mixtures of the PFAS analytes PFNA, PFHxS, PFBS, and HFPO-DA. 
+
+$$\text{Hazard Index} = \left(\frac{\text{HFPODA ppt}}{10 \text{ ppt}}\right) + \left(\frac{\text{PFBS ppt}}{2000 \text{ ppt}}\right) + \left(\frac{\text{PFNA ppt}}{10 \text{ ppt}}\right) + \left(\frac{\text{PFHxS ppt}}{10 \text{ ppt}}\right) $$
+
+The EPA’s Hazard Index Maximum Contaminant Level (MCL) is set at 1, meaning there are potential elevated health risks for drinking water with hazard index levels exceeding 1.
+
+
 ```{r}
 # Define main hazard analytes and colors
 hazard_analytes <- c("HFPODA", "PFNA", "PFBS", "PFHxS")
-hazard_colors <- c("HFPODA" = "#575c6d", "PFNA" = "#a69d75", 
-                   "PFBS" = "#ffea47", "PFHxS" = "#00204d")
+hazard_colors <- c(
+  "HFPODA" = "#332288",
+  "PFNA"   = "#117733",
+  "PFBS"   = "#44AA99",
+  "PFHxS"  = "#88CCEE"
+)
+
+# Global theme for all plots
+theme_set(
+  theme_classic(base_size = 22) +
+    theme(
+      plot.title = element_text(face = "bold", color = "black"),
+      axis.title = element_text(face = "bold", color = "black"),
+      axis.text = element_text(face = "bold", color = "black"),
+      legend.title = element_text(face = "bold", color = "black"),
+      legend.text = element_text(face = "bold", color = "black"),
+      plot.background = element_rect(fill = "gray95", color = NA),
+      panel.background = element_rect(fill = "gray95", color = NA)
+    )
+)
 
 # Aggregate analyte-level hazard contributions
 total_analyte_hazard <- public_water_max_long |>
@@ -457,21 +485,14 @@ p_bar <- ggplot(total_analyte_hazard,
                 aes(x = analyte, y = total_contribution, fill = analyte)) +
   geom_col(width = 0.7) +
   geom_text(aes(label = paste0(percent, "%")), 
-            vjust = -0.5, size = 6) +
+            vjust = -0.5, size = 7, fontface = "bold") +
   scale_fill_manual(values = hazard_colors) +
   labs(
     title = "Decomposed Hazard Index Contributions by Analyte",
     x = "Analyte",
     y = "Total Hazard Index Contribution"
   ) +
-  ylim(0, max(total_analyte_hazard$total_contribution) * 1.15) +
-  theme_minimal(base_size = 18) +
-  theme(
-    legend.position = "none",
-    plot.title = element_text(face = "bold", size = 22),
-    axis.title = element_text(size = 18),
-    axis.text = element_text(size = 16)
-  )
+  ylim(0, max(total_analyte_hazard$total_contribution) * 1.15)
 
 ggsave("analyte_contributions.png", p_bar, width = 12, height = 8, dpi = 300)
 
@@ -499,12 +520,8 @@ hazard_sites_full <- public_water_max_long %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
   mutate(
     Hazard_Index = as.numeric(Hazard_Index),
-    search_field = system_name
-  ) %>%
-  mutate(
     system_name = tolower(system_name),
-    type = tolower(type),
-    search_field = tolower(search_field)
+    type = tolower(type)
   )
 
 # Scale hazard values for bubbles
@@ -518,34 +535,7 @@ hazard_sites_full <- hazard_sites_full %>%
     size_plot = scaled_radius / max(scaled_radius) * 10
   )
 
-# Map with matching bubble gradient
-map_plot <- ggplot() +
-  geom_sf(data = mi_counties,
-          fill = "grey",
-          color = "black",
-          linewidth = 0.3,
-          alpha = 0.3) +
-  geom_sf(data = hazard_sites_full,
-          aes(size = size_plot, fill = Hazard_Index),
-          shape = 21,
-          color = "black",
-          alpha = 0.7,
-          stroke = 0.3) +
-  scale_fill_distiller(palette = "YlOrRd", direction = 1) +
-  scale_size_continuous(range = c(1, 10), guide = "none") +
-  labs(
-    title = "Hazard Index by Water System (Michigan)",
-    fill = "Hazard Index"
-  ) +
-  theme_minimal(base_size = 16) +
-  theme(
-    legend.position = "right",
-    plot.title = element_text(face = "bold", size = 22)
-  )
-
-ggsave("hazard_map.png", map_plot, width = 14, height = 10, dpi = 300)
-
-# Bubble Chart
+# Bubble legend data
 legend_data <- tibble(
   Hazard_Index = seq(5, max_val, by = 5)
 ) %>%
@@ -554,46 +544,64 @@ legend_data <- tibble(
     size_plot = scaled_radius / max(scaled_radius) * 10
   )
 
-legend_plot <- ggplot(legend_data,
-                      aes(x = Hazard_Index, y = 1,
-                          size = size_plot,
-                          fill = Hazard_Index)) +
-  geom_point(shape = 21, color = "black", alpha = 0.9) +
-  geom_text(aes(label = Hazard_Index),
-            vjust = -1.5, size = 5) +
-  scale_size_continuous(range = c(1, 10), guide = "none") +
-  scale_fill_distiller(palette = "YlOrRd", direction = 1, guide = "none") +  # remove fill legend
-  labs(
-    title = "Bubble Size & Color Represent Hazard Index",
-    x = "Hazard Index",
-    y = NULL
+# bubble legend
+bubble_legend <- ggplot(legend_data) +
+  geom_point(
+    aes(x = 0, y = Hazard_Index, size = size_plot, fill = Hazard_Index),
+    shape = 21,
+    color = "black",
+    alpha = 0.9,
+    stroke = 0.4
   ) +
-  theme_minimal(base_size = 16) +
+  geom_text(
+    aes(x = 0.6, y = Hazard_Index, label = Hazard_Index),
+    hjust = 0,
+    size = 7,
+    fontface = "bold",
+    color = "black"
+  ) +
+  scale_size_identity() +
+  scale_fill_distiller(
+    palette = "YlOrRd",
+    direction = 1,
+    guide = "none"   # ← THIS prevents ggplot from creating a fill legend
+  ) +
+  coord_fixed() +
+  theme_void() +
   theme(
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    panel.grid.major.y = element_blank(),
-    plot.title = element_text(face = "bold", size = 20)
+    plot.background = element_rect(fill = "gray95", color = NA),
+    plot.margin = unit(c(10, 10, 10, 10), "pt")
+  ) +
+  xlim(-0.5, 2)
+
+# Hazard map without legends
+map_plot <- ggplot() +
+  geom_sf(data = mi_counties,
+          fill = "white",
+          color = "black",
+          linewidth = 0.3) +
+  geom_sf(data = hazard_sites_full,
+          aes(size = size_plot, fill = Hazard_Index),
+          shape = 21,
+          color = "black",
+          alpha = 0.85,
+          stroke = 0.3) +
+  scale_fill_distiller(palette = "YlOrRd", direction = 1, guide = "none") +
+  scale_size_identity(guide = "none") +
+  labs(
+    title = "Hazard Index by Water System (Michigan)"
+  ) +
+  theme_map(base_size = 22) +
+  theme(
+    plot.title = element_text(face = "bold", color = "black"),
+    plot.background = element_rect(fill = "gray95", color = NA)
   )
 
-ggsave("bubble_chart.png", legend_plot, width = 10, height = 4, dpi = 300)
+# Combine hazard map + bubble legend
+combined_map <- map_plot + bubble_legend +
+  patchwork::plot_layout(widths = c(4, 1))
 
-# Recode system types
-public_water_max_long <- public_water_max_long |>
-  mutate(system_type = recode(system_type,
-    "ADFSTC" = "Non-Community Water Supply (Adult Foster Care Provider)",
-    "CHLCMP" = "Non-Community Water Supply (Children's Camp)",
-    "DAYCARE" = "Non-Community Water Supply (Child Care Provider)",
-    "INDUS" = "Non-Community Water Supply (Industry)",
-    "MEDCAR" = "Non-Community Water Supply (Medical Care Provider)",
-    "MOTEL" = "Non-Community Water Supply (Hotel or Motel)",
-    "MUN" = "Community Water Supply (Municipal, Nursing Home, Prison, etc.)",
-    "OFFICE" = "Office Building",
-    "PARK" = "Park",
-    "RESD" = "Residential",
-    "SCH" = "School",
-    "TRB" = "Tribal Lands"
-  ))
+ggsave("hazard_map.png", combined_map, width = 16, height = 10, dpi = 300)
 
 # System-level hazard decomposition
 system_analytes <- public_water_max_long |>
@@ -632,28 +640,123 @@ system_analytes_top <- system_analytes |>
   filter(system_name %in% system_total$system_name) |>
   mutate(system_name = factor(system_name, levels = system_total$system_name))
 
-# Stacked bar chart for top systems
+# Horizontal stacked bar chart for top systems
 p_system_hazard <- ggplot(
   system_analytes_top,
-  aes(x = system_name,
-      y = total_hazard_analyte,
+  aes(y = system_name,
+      x = total_hazard_analyte,
       fill = analyte)
 ) +
   geom_col(width = 0.7) +
-  scale_fill_viridis_d(option = "cividis", end = 0.9) +
+  scale_fill_manual(values = hazard_colors) +
   labs(
     title = "Hazard Index Decomposition for Top Systems",
-    x = "System Name",
-    y = "Hazard Index",
+    x = "Hazard Index",
+    y = "System Name",
     fill = "Analyte"
   ) +
-  theme_minimal(base_size = 16) +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.position = "right",
-    plot.title = element_text(face = "bold", size = 20)
+    legend.position = "bottom"
   )
 
 ggsave("system_hazard.png", p_system_hazard, width = 14, height = 10, dpi = 300)
-```
 
+# Static PFAS sites map
+pfas_sites_sf <- pfas_sites %>%
+  mutate(
+    type = str_replace_all(type, "mlitary", "military"),
+    type = str_to_title(type),
+    type = str_replace_all(type, "Laundromat/Drycleaner", "Laundromat/Dry Cleaner"),
+    type = case_when(
+      type %in% c("Tannery", "Unknown", "Refinery", "Fire Station") ~ "Other",
+      TRUE ~ type
+    )
+  ) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+site_types <- sort(unique(pfas_sites_sf$type))
+pfas_pal <- colorRampPalette(RColorBrewer::brewer.pal(9, "YlOrRd"))(length(site_types))
+names(pfas_pal) <- site_types
+
+pfas_static_map <- ggplot() +
+  geom_sf(data = mi_counties,
+          fill = "white",
+          color = "black",
+          linewidth = 0.3) +
+  geom_sf(data = pfas_sites_sf,
+          aes(color = type),
+          size = 3,
+          alpha = 0.9) +
+  scale_color_manual(values = pfas_pal) +
+  labs(
+    title = "PFAS Contamination Sites in Michigan",
+    color = "Site Type"
+  ) +
+  theme_map(base_size = 22) +
+  theme(
+    plot.title = element_text(face = "bold", color = "black"),
+    legend.position = "right",
+    legend.title = element_text(face = "bold", color = "black"),
+    legend.text = element_text(face = "bold", color = "black"),
+    plot.background = element_rect(fill = "gray95", color = NA),
+    panel.background = element_rect(fill = "gray95", color = NA)
+  )
+
+ggsave("pfas_sites_map.png", pfas_static_map, width = 14, height = 10, dpi = 300)
+
+# Build metrics table from system_locations
+metrics_table <- system_locations |>
+  group_by(system_short) |>
+  summarise(
+    n_systems = n(),
+    mean_hazard = mean(Hazard_Index, na.rm = TRUE),
+    dominant_analyte = first(dominant_analyte),
+    .groups = "drop"
+  ) |>
+  left_join(
+    system_type_map %>% select(short_name, full_name),
+    by = c("system_short" = "short_name")
+  ) |>
+  arrange(desc(n_systems)) |>
+  mutate(
+    mean_hazard = round(mean_hazard, 2)
+  )
+
+# Build poster-ready static table
+gt_metrics <- metrics_table |>
+  gt() |>
+  tab_header(
+    title = md("**System Metrics Summary**")
+  ) |>
+  cols_label(
+    full_name = "Full Descriptive Name",
+    system_short = "Short Name",
+    n_systems = "Number of Systems",
+    mean_hazard = "Mean Hazard Index",
+    dominant_analyte = "Dominant Analyte"
+  ) |>
+  tab_options(
+    table.background.color = "gray95",
+    heading.background.color = "gray95",
+    column_labels.background.color = "gray95",
+    table.font.size = 20,
+    data_row.padding = px(8),
+    heading.align = "center",
+    column_labels.border.top.color = "black",
+    column_labels.border.bottom.color = "black",
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  ) |>
+  tab_style(
+    style = cell_text(weight = "bold", color = "black"),
+    locations = cells_column_labels(everything())
+  ) |>
+  tab_style(
+    style = cell_text(color = "black"),
+    locations = cells_body()
+  )
+
+# Save as PNG
+gtsave(gt_metrics, "system_metrics_table.png", expand = 5)
+
+```
