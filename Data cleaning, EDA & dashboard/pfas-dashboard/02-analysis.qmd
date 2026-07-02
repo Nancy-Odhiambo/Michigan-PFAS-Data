@@ -1889,58 +1889,78 @@ browsable(tagList(download_btn, rt))
 ```{r}
 # Top 10 analyte category by total % & absolute concentration
 
-# Prepare data
-top10_analyte <- surface_max_full |>
-  filter(analyte_value > 0) |>
-  group_by(analyte) |>
-  summarize(total_concentration = sum(analyte_value, na.rm = TRUE)) |>
-  ungroup() |>
-  mutate(share = total_concentration / sum(total_concentration)) |>
-  slice_max(share, n = 10) |>
-  arrange(share)
+top10_analyte <- surface_max_full %>%
+  filter(analyte_value > 0) %>%
+  group_by(analyte) %>%
+  summarise(
+    total_concentration = sum(analyte_value, na.rm = TRUE),
+    sites = n_distinct(site_code),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    share = total_concentration / sum(total_concentration)
+  ) %>%
+  slice_max(total_concentration, n = 10) %>%
+  arrange(total_concentration)
 
-# Interactive Plotly bar chart
-p_surface <- plot_ly(
+
+plot_ly(
+
   data = top10_analyte,
+
   x = ~share,
   y = ~fct_reorder(analyte, share),
+
   type = "bar",
   orientation = "h",
+
   marker = list(
     color = ~share,
-    colorscale = "Cividis"
+    colorscale = "Cividis",
+    line = list(color = "white", width = 1.2)
   ),
-  text = ~paste0(
-    percent(share, accuracy = 0.1),
-    " (", comma(round(total_concentration, 1)), " ppt)"
-  ),
-  textposition = "outside",
-  hoverinfo = "text",
-  hovertext = ~paste(
-    "<b>Analyte:</b>", analyte,
-    "<br><b>Share:</b>", percent(share, accuracy = 0.1),
-    "<br><b>Total Concentration:</b>", comma(round(total_concentration, 1)), "ppt"
-  )
-) |>
-  layout(
-    title = "Top 10 PFAS Analytes in Surface Water",
-    xaxis = list(
-      title = "Share of Total PFAS",
-      tickformat = ".0%",
-      range = c(0, max(top10_analyte$share) * 1.25)
-    ),
-    yaxis = list(title = "Analyte Category"),
-    margin = list(l = 120, r = 40, t = 80),
-    hoverlabel = list(
-      bgcolor = "lightyellow",
-      font = list(color = "black", size = 12),
-      bordercolor = "orange"
-    ),
-    showlegend = FALSE
-  ) |>
-  onRender(js_auto_hover)
 
-p_surface
+  text = NULL,
+
+  customdata = ~cbind(total_concentration, sites),
+
+  hovertemplate = paste0(
+    "<b>%{y}</b><br><br>",
+    "<b>Total PFAS:</b> %{customdata[0]:,.1f} ppt<br>",
+    "<b>Contribution:</b> %{x:.1%}<br>",
+    "<b>Sampling Sites:</b> %{customdata[1]}<br>",
+    "<extra></extra>"
+  )
+
+) %>%
+
+layout(
+
+  title = list(
+    text = "<b>Top 10 PFAS Analytes in Surface Water</b>",
+    x = 0.02
+  ),
+
+  xaxis = list(
+    title = "<b>Share of Total PFAS</b>",
+    tickformat = ".0%"
+  ),
+
+  yaxis = list(title = ""),
+
+  margin = list(l = 120, r = 60, t = 70, b = 50),
+
+  hoverlabel = list(
+    bgcolor = "#0B1F3A",
+    bordercolor = "#0B1F3A",
+    font = list(color = "white", size = 13),
+    namelength = 0
+  ),
+
+  showlegend = FALSE
+) %>%
+
+onRender(js_auto_hover)
 
 ```
 
@@ -1951,22 +1971,45 @@ mi_counties <- suppressMessages(
   st_read("cb_2018_us_county_500k.shp", quiet = TRUE)
 ) |>
   filter(STATEFP == "26") |>
-  st_transform(4326)
+  st_transform(4326) |>
+  mutate(GEOID = as.character(GEOID))
 
 # Aggregate surface water PFAS by county
 surface_county_map <- surface_max_full |>
+  mutate(geoid = as.character(geoid)) |>
   group_by(geoid) |>
-  summarize(total_value = sum(analyte_value, na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    total_value = sum(analyte_value, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
   left_join(mi_counties, by = c("geoid" = "GEOID")) |>
   st_as_sf()
 
-# SharedData for Crosstalk filtering
-shared_surface <- SharedData$new(surface_county_map, key = ~geoid, group = "surface")
+# Crosstalk SharedData
+shared_surface <- SharedData$new(
+  surface_county_map,
+  key = ~geoid,
+  group = "surface"
+)
 
 # Color palette
-pal <- colorNumeric("magma", domain = surface_county_map$total_value)
+pal <- colorNumeric(
+  palette = "magma",
+  domain = surface_county_map$total_value,
+  na.color = "transparent"
+)
 
-# Filter widget (placed above the map)
+# County popup labels
+county_popup <- ~lapply(
+  sprintf(
+    "<b>%s County</b><br>Total PFAS: %.1f ppt",
+    NAME,
+    total_value
+  ),
+  htmltools::HTML
+)
+
+# Crosstalk filter
 filter_widget <- filter_select(
   id = "county_filter",
   label = "Filter by County",
@@ -1974,7 +2017,7 @@ filter_widget <- filter_select(
   group = ~NAME
 )
 
-# Build full-width interactive map
+# Interactive county map
 map_widget <- leaflet(shared_surface) %>%
   addProviderTiles(providers$CartoDB.Positron) %>%
   addPolygons(
@@ -1982,10 +2025,7 @@ map_widget <- leaflet(shared_surface) %>%
     fillOpacity = 0.8,
     color = "white",
     weight = 1,
-    label = ~paste0(
-      "<b>", NAME, " County</b><br>",
-      "Total PFAS: ", round(total_value, 1), " ppt"
-    ) |> lapply(htmltools::HTML),
+    label = county_popup,
     highlightOptions = highlightOptions(
       weight = 2,
       color = "black",
@@ -2000,10 +2040,10 @@ map_widget <- leaflet(shared_surface) %>%
     position = "bottomright"
   )
 
-# Display filter above full-width map
+# Display filter above map
 htmltools::tagList(
-  filter_widget,
-  map_widget
+  div(style = "margin-bottom: 10px;", filter_widget),
+  div(style = "width: 100%;", map_widget)
 )
 
 ```

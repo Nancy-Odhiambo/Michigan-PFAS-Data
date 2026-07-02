@@ -1,5 +1,6 @@
 <?xml version='1.0' encoding='UTF-8' ?>
-<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' class='svglite' width='1368.00pt' height='720.00pt' viewBox='0 0 1368.00 720.00'>
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='1368.00pt' height='720.00pt' viewBox='0 0 1368.00 720.00'>
+<g class='svglite'>
 <defs>
   <style type='text/css'><![CDATA[
     .svglite line, .svglite polyline, .svglite polygon, .svglite path, .svglite rect, .svglite circle {
@@ -11,6 +12,10 @@
     }
     .svglite text {
       white-space: pre;
+    }
+    .svglite g.glyphgroup path {
+      fill: inherit;
+      stroke: none;
     }
   ]]></style>
 </defs>
@@ -527,8 +532,8 @@
 <circle cx='937.14' cy='643.48' r='5.69' style='stroke-width: 0.71; stroke: #000000; stroke-opacity: 0.70; stroke-linecap: butt; fill: #E69F00; fill-opacity: 0.70;' />
 </g>
 <g clip-path='url(#cpMC4wMHwxMzY4LjAwfDAuMDB8NzIwLjAw)'>
-<rect x='361.05' y='307.66' width='196.33' height='340.34' style='stroke-width: 3.10; stroke: none; fill: #FFFFFF;' />
-<text x='376.99' y='341.68' style='font-size: 22.00px; font-weight: bold; font-family: "Arial";' textLength='96.20px' lengthAdjust='spacingAndGlyphs'>Site Type</text>
+<rect x='361.05' y='307.66' width='196.34' height='340.34' style='stroke-width: 3.10; stroke: none; fill: #FFFFFF;' />
+<text x='376.99' y='341.68' style='font-size: 22.00px; font-weight: bold; font-family: "Arial";' textLength='96.17px' lengthAdjust='spacingAndGlyphs'>Site Type</text>
 <circle cx='394.00' cy='376.94' r='5.69' style='stroke-width: 0.71; stroke: #000000; stroke-opacity: 0.70; fill: #999999; fill-opacity: 0.70;' />
 <circle cx='394.00' cy='410.96' r='5.69' style='stroke-width: 0.71; stroke: #000000; stroke-opacity: 0.70; fill: #D55E00; fill-opacity: 0.70;' />
 <circle cx='394.00' cy='444.97' r='5.69' style='stroke-width: 0.71; stroke: #000000; stroke-opacity: 0.70; fill: #56B4E9; fill-opacity: 0.70;' />
@@ -538,12 +543,13 @@
 <circle cx='394.00' cy='581.04' r='5.69' style='stroke-width: 0.71; stroke: #000000; stroke-opacity: 0.70; fill: #F0E442; fill-opacity: 0.70;' />
 <circle cx='394.00' cy='615.05' r='5.69' style='stroke-width: 0.71; stroke: #000000; stroke-opacity: 0.70; fill: #0072B2; fill-opacity: 0.70;' />
 <text x='426.95' y='384.10' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='66.66px' lengthAdjust='spacingAndGlyphs'>Airport</text>
-<text x='426.95' y='418.12' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='114.49px' lengthAdjust='spacingAndGlyphs'>Fire Related</text>
-<text x='426.95' y='452.13' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='90.02px' lengthAdjust='spacingAndGlyphs'>Industrial</text>
-<text x='426.95' y='486.15' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='71.11px' lengthAdjust='spacingAndGlyphs'>Landfill</text>
+<text x='426.95' y='418.12' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='114.50px' lengthAdjust='spacingAndGlyphs'>Fire Related</text>
+<text x='426.95' y='452.13' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='90.03px' lengthAdjust='spacingAndGlyphs'>Industrial</text>
+<text x='426.95' y='486.15' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='71.12px' lengthAdjust='spacingAndGlyphs'>Landfill</text>
 <text x='426.95' y='520.17' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='70.03px' lengthAdjust='spacingAndGlyphs'>Military</text>
 <text x='426.95' y='554.18' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='53.34px' lengthAdjust='spacingAndGlyphs'>Other</text>
-<text x='426.95' y='588.20' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='66.68px' lengthAdjust='spacingAndGlyphs'>Plating</text>
+<text x='426.95' y='588.20' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='66.69px' lengthAdjust='spacingAndGlyphs'>Plating</text>
 <text x='426.95' y='622.21' style='font-size: 20.00px; font-weight: bold; font-family: "Arial";' textLength='110.42px' lengthAdjust='spacingAndGlyphs'>Wastewater</text>
+</g>
 </g>
 </svg>
