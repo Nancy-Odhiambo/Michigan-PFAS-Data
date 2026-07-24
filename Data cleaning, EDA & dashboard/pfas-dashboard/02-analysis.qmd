@@ -1885,80 +1885,99 @@ browsable(tagList(download_btn, rt))
 
 ### Surface Water
 #### Analyte Concentration
-
 ```{r}
-# Top 10 analyte category by total % & absolute concentration
+# Section tests
+# Dominant PFAS analytes in Michigan surface water
 
 top10_analyte <- surface_max_full %>%
-  filter(analyte_value > 0) %>%
+  filter(
+    !is.na(analyte),
+    analyte_value > 0
+  ) %>%
   group_by(analyte) %>%
   summarise(
     total_concentration = sum(analyte_value, na.rm = TRUE),
-    sites = n_distinct(site_code),
+    sampling_sites = n_distinct(site_code),
     .groups = "drop"
   ) %>%
   mutate(
-    share = total_concentration / sum(total_concentration)
+    contribution = total_concentration / sum(total_concentration)
   ) %>%
-  slice_max(total_concentration, n = 10) %>%
+  slice_max(
+    total_concentration,
+    n = 10
+  ) %>%
   arrange(total_concentration)
 
-
 plot_ly(
-
   data = top10_analyte,
 
-  x = ~share,
-  y = ~fct_reorder(analyte, share),
+  x = ~contribution,
+  y = ~forcats::fct_reorder(analyte, contribution),
 
   type = "bar",
   orientation = "h",
 
   marker = list(
-    color = ~share,
+    color = ~contribution,
     colorscale = "Cividis",
-    line = list(color = "white", width = 1.2)
+    line = list(
+      color = "white",
+      width = 1.2
+    )
   ),
 
-  text = NULL,
+  hoverinfo = "text",
 
-  customdata = ~cbind(total_concentration, sites),
-
-  hovertemplate = paste0(
-    "<b>%{y}</b><br><br>",
-    "<b>Total PFAS:</b> %{customdata[0]:,.1f} ppt<br>",
-    "<b>Contribution:</b> %{x:.1%}<br>",
-    "<b>Sampling Sites:</b> %{customdata[1]}<br>",
-    "<extra></extra>"
+  hovertext = ~paste0(
+    "<b>", analyte, "</b><br><br>",
+    "<b>Total Concentration:</b> ",
+    scales::comma(round(total_concentration, 1)),
+    " ppt<br>",
+    "<b>Contribution:</b> ",
+    round(contribution * 100, 2),
+    "%<br>",
+    "<b>Sampling Sites:</b> ",
+    sampling_sites
   )
 
-) %>%
+) |>
 
 layout(
 
   title = list(
-    text = "<b>Top 10 PFAS Analytes in Surface Water</b>",
+    text = "<b>Dominant PFAS Analytes in Michigan Surface Water</b>",
     x = 0.02
   ),
 
   xaxis = list(
     title = "<b>Share of Total PFAS</b>",
-    tickformat = ".0%"
+    tickformat = ".1%"
   ),
 
-  yaxis = list(title = ""),
+  yaxis = list(
+    title = ""
+  ),
 
-  margin = list(l = 120, r = 60, t = 70, b = 50),
+  margin = list(
+    l = 140,
+    r = 40,
+    t = 70,
+    b = 50
+  ),
 
   hoverlabel = list(
     bgcolor = "#0B1F3A",
     bordercolor = "#0B1F3A",
-    font = list(color = "white", size = 13),
-    namelength = 0
+    font = list(
+      color = "white",
+      size = 13
+    )
   ),
 
   showlegend = FALSE
-) %>%
+
+) |>
 
 onRender(js_auto_hover)
 
@@ -1966,89 +1985,128 @@ onRender(js_auto_hover)
 
 
 ```{r}
-# Load Michigan counties
+# Michigan counties
+
 mi_counties <- suppressMessages(
   st_read("cb_2018_us_county_500k.shp", quiet = TRUE)
 ) |>
   filter(STATEFP == "26") |>
   st_transform(4326) |>
-  mutate(GEOID = as.character(GEOID))
+  mutate(
+    GEOID = as.character(GEOID)
+  )
 
-# Aggregate surface water PFAS by county
-surface_county_map <- surface_max_full |>
-  mutate(geoid = as.character(geoid)) |>
-  group_by(geoid) |>
+# Aggregate total PFAS concentration by county
+
+surface_county <- surface_max_full %>%
+  mutate(
+    geoid = as.character(geoid)
+  ) %>%
+  group_by(geoid) %>%
   summarise(
-    total_value = sum(analyte_value, na.rm = TRUE),
+    total_concentration = sum(analyte_value, na.rm = TRUE),
+    sampling_sites = n_distinct(site_code),
+    analytes = n_distinct(analyte),
     .groups = "drop"
-  ) |>
-  left_join(mi_counties, by = c("geoid" = "GEOID")) |>
-  st_as_sf()
+  )
 
-# Crosstalk SharedData
+# Join to county geometry
+
+surface_map <- mi_counties %>%
+  left_join(
+    surface_county,
+    by = c("GEOID" = "geoid")
+  )
+
+# Crosstalk
+
 shared_surface <- SharedData$new(
-  surface_county_map,
-  key = ~geoid,
+  surface_map,
+  key = ~GEOID,
   group = "surface"
 )
 
 # Color palette
+
 pal <- colorNumeric(
   palette = "magma",
-  domain = surface_county_map$total_value,
-  na.color = "transparent"
+  domain = surface_map$total_concentration,
+  na.color = "#F5F5F5"
 )
 
-# County popup labels
-county_popup <- ~lapply(
-  sprintf(
-    "<b>%s County</b><br>Total PFAS: %.1f ppt",
-    NAME,
-    total_value
-  ),
-  htmltools::HTML
-)
+# County filter
 
-# Crosstalk filter
-filter_widget <- filter_select(
-  id = "county_filter",
-  label = "Filter by County",
+county_filter <- filter_select(
+  id = "surface_county_filter",
+  label = "Select County",
   sharedData = shared_surface,
   group = ~NAME
 )
 
-# Interactive county map
-map_widget <- leaflet(shared_surface) %>%
-  addProviderTiles(providers$CartoDB.Positron) %>%
+# Interactive map
+
+surface_map_widget <- leaflet(shared_surface) |>
+
+  addProviderTiles(
+    providers$CartoDB.Positron
+  ) |>
+
   addPolygons(
-    fillColor = ~pal(total_value),
-    fillOpacity = 0.8,
+
+    fillColor = ~pal(total_concentration),
+    fillOpacity = 0.85,
+
     color = "white",
     weight = 1,
-    label = county_popup,
+
+    popup = ~sprintf(
+      "<div style='background:#0B1F3A;
+                  color:white;
+                  padding:10px;
+                  border-radius:8px;'>
+
+      <b>%s County</b><br><br>
+
+      <b>Total PFAS:</b> %s ppt<br>
+
+      <b>Sampling Sites:</b> %s<br>
+
+      <b>Analytes Detected:</b> %s
+
+      </div>",
+
+      NAME,
+      scales::comma(round(total_concentration,1)),
+      sampling_sites,
+      analytes
+    ),
+
     highlightOptions = highlightOptions(
-      weight = 2,
-      color = "black",
-      fillOpacity = 0.9,
+      weight = 3,
+      color = "#000000",
+      fillOpacity = 1,
       bringToFront = TRUE
     )
-  ) %>%
+
+  ) |>
+
   addLegend(
     pal = pal,
-    values = ~total_value,
+    values = ~total_concentration,
     title = "Total PFAS (ppt)",
     position = "bottomright"
   )
 
-# Display filter above map
 htmltools::tagList(
-  div(style = "margin-bottom: 10px;", filter_widget),
-  div(style = "width: 100%;", map_widget)
+
+  div(
+    style = "margin-bottom:10px;",
+    county_filter
+  ),
+
+  surface_map_widget
 )
-
 ```
-
-
 
 ### Public Water Conc.
 #### Top 10 public water PFAS Conc.
