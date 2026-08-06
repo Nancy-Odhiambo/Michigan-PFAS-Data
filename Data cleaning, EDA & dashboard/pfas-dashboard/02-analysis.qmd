@@ -1288,7 +1288,6 @@ metrics_table <- system_total |>
   rename(System = system_name, `Total Hazard Index` = total_hazard) |>
   arrange(desc(`Total Hazard Index`))
 
-# -------------------------------
 # Render interactive table using reactable
 tbl_id <- "system_hazard_metrics_table"
 
@@ -1421,7 +1420,7 @@ ggplotly(p_system_hazard, tooltip = "text") |>
 
 
 ```{r}
-# Step 1–5: Prepare the system hazard summary table
+# Prepare the system hazard summary table
 system_analytes_top <- public_water_max_long %>%
   filter(
     Hazard_Index > 1,
@@ -1466,7 +1465,7 @@ system_hazard_agg <- system_total %>%
   mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
   arrange(desc(total_hazard))
 
-# Step 6: Create reactable table only (no plot)
+# Create reactable table only (no plot)
 tbl_id <- "system_summary_table"
 
 rt_system_summary <- reactable(
@@ -1488,7 +1487,7 @@ rt_system_summary <- reactable(
   )
 )
 
-# Step 7: Download button
+# Download button
 download_btn <- tags$button(
   "Download CSV",
   onclick = sprintf("Reactable.downloadDataCSV('%s', 'system_summary.csv')", tbl_id),
@@ -1808,9 +1807,6 @@ tagList(
 
 ```{r}
 # Visualizing the type of site by the composition of 4 main analytes with the hazard index
-
-# Use the already-cleaned hazard_data_types to get clean type values
-# Join back to merged_data to restore analyte columns
 hazard_data_analytes <- merged_data |>
   inner_join(
     hazard_data_types |> select(hex_id, type, Hazard_Index),
@@ -1952,7 +1948,7 @@ layout(
 
   xaxis = list(
     title = "<b>Share of Total PFAS</b>",
-    tickformat = ".1%"
+    tickformat = ".0%"
   ),
 
   yaxis = list(
@@ -1967,17 +1963,16 @@ layout(
   ),
 
   hoverlabel = list(
-    bgcolor = "#0B1F3A",
-    bordercolor = "#0B1F3A",
+    bgcolor = "lightyellow",
+    bordercolor = "orange",
     font = list(
-      color = "white",
-      size = 13
-    )
+      color = "black",
+      size = 12
+    ),
+    namelength = 0
   ),
 
-  showlegend = FALSE
-
-) |>
+  showlegend = FALSE) |>
 
 onRender(js_auto_hover)
 
@@ -1996,56 +1991,78 @@ mi_counties <- suppressMessages(
     GEOID = as.character(GEOID)
   )
 
-# Aggregate total PFAS concentration by county
 
-surface_county <- surface_max_full %>%
+# Aggregate surface water PFAS concentration by county
+
+surface_county <- surface_max_full |>
   mutate(
     geoid = as.character(geoid)
-  ) %>%
-  group_by(geoid) %>%
+  ) |>
+  group_by(geoid) |>
   summarise(
-    total_concentration = sum(analyte_value, na.rm = TRUE),
+
+    total_concentration = sum(
+      analyte_value,
+      na.rm = TRUE
+    ),
+
     sampling_sites = n_distinct(site_code),
+
     analytes = n_distinct(analyte),
+
     .groups = "drop"
+
   )
 
-# Join to county geometry
 
-surface_map <- mi_counties %>%
+# Join county summaries with county boundaries
+
+surface_map <- mi_counties |>
   left_join(
     surface_county,
     by = c("GEOID" = "geoid")
   )
 
-# Crosstalk
 
-shared_surface <- SharedData$new(
-  surface_map,
-  key = ~GEOID,
-  group = "surface"
+# Remove missing values for color scale
+
+surface_values <- surface_map$total_concentration[
+  !is.na(surface_map$total_concentration)
+]
+
+
+# Create viridis color palette
+
+surface_pal <- colorNumeric(
+
+  palette = viridis::viridis(
+    256,
+    option = "C"
+  ),
+
+  domain = surface_values,
+
+  na.color = "#D9D9D9"
+
 )
 
-# Color palette
 
-pal <- colorNumeric(
-  palette = "magma",
-  domain = surface_map$total_concentration,
-  na.color = "#F5F5F5"
+# Create legend breaks
+# Leaflet requires increasing values
+
+surface_bins <- pretty(
+  surface_values,
+  n = 6
 )
 
-# County filter
-
-county_filter <- filter_select(
-  id = "surface_county_filter",
-  label = "Select County",
-  sharedData = shared_surface,
-  group = ~NAME
+surface_bins <- sort(
+  unique(surface_bins)
 )
 
-# Interactive map
 
-surface_map_widget <- leaflet(shared_surface) |>
+# Interactive surface water map
+
+surface_map_widget <- leaflet(surface_map) |>
 
   addProviderTiles(
     providers$CartoDB.Positron
@@ -2053,59 +2070,107 @@ surface_map_widget <- leaflet(shared_surface) |>
 
   addPolygons(
 
-    fillColor = ~pal(total_concentration),
+    fillColor = ~surface_pal(total_concentration),
+
     fillOpacity = 0.85,
 
     color = "white",
+
     weight = 1,
 
+    smoothFactor = 0.3,
+
+
     popup = ~sprintf(
-      "<div style='background:#0B1F3A;
-                  color:white;
-                  padding:10px;
-                  border-radius:8px;'>
+
+      "<div style='
+      background:lightyellow;
+      color:black;
+      border:2px solid orange;
+      padding:10px;
+      border-radius:8px;
+      font-size:12px;
+      line-height:1.5;
+      '>
 
       <b>%s County</b><br><br>
 
-      <b>Total PFAS:</b> %s ppt<br>
+      <b>Total PFAS Concentration:</b><br>
+      %s ppt<br><br>
 
-      <b>Sampling Sites:</b> %s<br>
+      <b>Sampling Sites:</b><br>
+      %s<br><br>
 
-      <b>Analytes Detected:</b> %s
+      <b>Detected Analytes:</b><br>
+      %s
 
       </div>",
 
+
       NAME,
-      scales::comma(round(total_concentration,1)),
-      sampling_sites,
-      analytes
+
+
+      ifelse(
+        is.na(total_concentration),
+        "No Data",
+        scales::comma(
+          round(total_concentration, 1)
+        )
+      ),
+
+
+      ifelse(
+        is.na(sampling_sites),
+        "No Data",
+        sampling_sites
+      ),
+
+
+      ifelse(
+        is.na(analytes),
+        "No Data",
+        analytes
+      )
+
     ),
 
+
     highlightOptions = highlightOptions(
+
       weight = 3,
-      color = "#000000",
+
+      color = "orange",
+
       fillOpacity = 1,
+
       bringToFront = TRUE
+
     )
 
   ) |>
 
   addLegend(
-    pal = pal,
-    values = ~total_concentration,
-    title = "Total PFAS (ppt)",
-    position = "bottomright"
+
+    position = "bottomleft",
+
+    title = htmltools::HTML(
+      "<b>Total PFAS (ppt)</b>"
+    ),
+
+    pal = surface_pal,
+
+    values = surface_values,
+
+    bins = surface_bins,
+
+    opacity = 1
+
   )
 
-htmltools::tagList(
 
-  div(
-    style = "margin-bottom:10px;",
-    county_filter
-  ),
+# Display map
 
-  surface_map_widget
-)
+surface_map_widget
 ```
 
 ### Public Water Conc.
