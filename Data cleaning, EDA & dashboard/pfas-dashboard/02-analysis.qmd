@@ -2176,42 +2176,91 @@ surface_map_widget
 ### Public Water Conc.
 #### Top 10 public water PFAS Conc.
 ```{r}
-hazard_colors <- c("HFPODA" = "#575c6d", "PFNA" = "#a69d75", "PFBS" = "#ffea47", "PFHxS" = "#00204d")
+# Define colors for hazard-contributing PFAS analytes
+hazard_colors <- c(
+  "HFPODA" = "#575c6d",
+  "PFNA" = "#a69d75",
+  "PFBS" = "#ffea47",
+  "PFHxS" = "#00204d"
+)
 
-# Top 10 PFAS analytes in public water
+# Calculate top 10 PFAS analytes in public water systems
 top_analytes <- public_max_full |>
   filter(analyte_value > 0) |>
   group_by(analyte) |>
-  summarize(total_concentration = sum(analyte_value, na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    total_concentration = sum(analyte_value, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    contribution = total_concentration / sum(total_concentration)
+  ) |>
   slice_max(total_concentration, n = 10)
 
-other_analytes <- top_analytes$analyte[which(!(top_analytes$analyte %in% names(hazard_colors)))]
-other_colors <- setNames(rep("pink", length(other_analytes)), other_analytes)
+# Assign pink color to non-hazard analytes
+analyte_colors <- c(
+  hazard_colors,
+  setNames(
+    rep("pink", sum(!top_analytes$analyte %in% names(hazard_colors))),
+    top_analytes$analyte[!top_analytes$analyte %in% names(hazard_colors)]
+  )
+)
 
-ggplot(top_analytes, aes(x = fct_reorder(analyte, total_concentration), 
-                         y = total_concentration, 
-                         fill = analyte)) +
-  geom_col() +
-  geom_text(aes(label = comma(round(total_concentration, 1))), 
-            hjust = -0.05, size = 3.5) +  # labels outside bars
-  coord_flip() +
-#  scale_fill_viridis_c(option = "cividis", direction = -1) +
-  scale_fill_manual(values = c(hazard_colors, other_colors)) +
-  scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) +  # wrap long names
-  labs(
-    title = "Top 10 PFAS Analytes in Public Water Systems",
-    x = "PFAS Analyte",
-    y = "Total PFAS Concentration (ppt)",
-    fill = "Total Concentration",
-    caption = "Data source: Michigan PFAS Action Response Team (MPART), EGLE"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    axis.title = element_text(face = "bold"),
-    legend.position = "none"
-  ) +
-  expand_limits(y = max(top_analytes$total_concentration) * 1.1)  # space for labels
+# Interactive horizontal bar chart
+plot_ly(
+  data = top_analytes,
+  x = ~contribution,
+  y = ~forcats::fct_reorder(analyte, contribution),
+  type = "bar",
+  orientation = "h",
+  marker = list(
+    color = ~analyte_colors[analyte],
+    line = list(
+      color = "white",
+      width = 1.2
+    )
+  ),
+  hoverinfo = "text",
+  hovertext = ~paste0(
+    "<b>", analyte, "</b><br><br>",
+    "<b>Total Concentration:</b> ",
+    scales::comma(round(total_concentration, 1)),
+    " ppt<br>",
+    "<b>Contribution:</b> ",
+    round(contribution * 100, 2),
+    "%"
+  )
+) |>
+layout(
+  title = list(
+    text = "<b>PFAS Analytes Percentages in Michigan Public Water Systems</b>",
+    x = 0.02
+  ),
+  xaxis = list(
+    title = "<b>Total PFAS</b>",
+    tickformat = ".0%"
+  ),
+  yaxis = list(
+    title = ""
+  ),
+  margin = list(
+    l = 140,
+    r = 40,
+    t = 70,
+    b = 50
+  ),
+  hoverlabel = list(
+    bgcolor = "lightyellow",
+    bordercolor = "orange",
+    font = list(
+      color = "black",
+      size = 12
+    ),
+    namelength = 0
+  ),
+  showlegend = FALSE
+) |>
+onRender(js_auto_hover)
 ```
 
 ```{r}
