@@ -1736,9 +1736,8 @@ pfas_sites_sf <- pfas_sites %>%
     type = str_replace_all(type, "mlitary", "military"),
     type = str_to_title(type),
     type = str_replace_all(type, "Laundromat/Drycleaner", "Laundromat/Dry Cleaner"),
-    type = case_when(
-      type %in% c("Tannery", "Unknown", "Refinery", "Fire Station") ~ "Other",
-      TRUE ~ type
+    type = case_when(type %in% c("Fire Station", "Fire Related") ~ "Fire Related",type %in% c("Tannery", "Unknown", "Refinery") ~ "Other",
+  TRUE ~ type
     ),
     popup_label = paste0(
       "<b>Facility:</b> ", facility, "<br>",
@@ -2367,3 +2366,27 @@ total_pfas |>
 
 ```
 
+Exporting datasets for modeling
+
+```{r}
+# Final Surface Water data 
+write_csv( surface_max_full, "surface_water1.csv" ) 
+
+# Final PFAS Sites data 
+write_csv( pfas_sites, "pfas_sites1.csv" ) 
+
+# Final Public Water data 
+write_csv( public_water_max_long, "public_water1.csv" ) 
+
+# Apply final site-type changes to the existing merged data 
+merged_data <- merged_data |> 
+  mutate( type = str_replace_all(type, "mlitary", "military"), 
+          type = str_to_title(type), 
+          type = str_replace_all( type, "Laundromat/Drycleaner", "Laundromat/Dry Cleaner" ), 
+          type = case_when(type %in% c("Fire Station", "Fire Related") ~ "Fire Related",type %in% c("Tannery", "Unknown", "Refinery") ~ "Other",
+  TRUE ~ type
+)) 
+
+# Final merged data 
+write_csv( merged_data, "merged_data1.csv" )
+```

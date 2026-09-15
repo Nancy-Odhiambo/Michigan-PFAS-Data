@@ -1,0 +1,55 @@
+---
+title: "PFAS Modeling"
+format:
+  dashboard:
+    orientation: rows   
+    theme: flatly          
+    toc: true              
+    self-contained: true   
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true
+---
+
+```{r}
+library(tidyverse)
+library(readr)
+library(janitor)
+```
+
+```{r}
+# Load all final cleaned datasets
+surface_water1 <- read_csv("surface_water1.csv")
+pfas_sites1 <- read_csv("pfas_sites1.csv")
+public_water1 <- read_csv("public_water1.csv")
+merged_data1 <- read_csv("merged_data1.csv")
+```
+
+```{r}
+# Load wells / aquifer characteristics data
+wells_data <- read_csv("Aquifer_Characteristics_Of_Glacial_Drift.csv")
+```
+
+```{r}
+glimpse(wells)
+```
+```{r}
+glimpse(merged_data1)
+```
+
+```{r}
+glimpse(surface_water1)
+
+```
+
+```{r}
+glimpse(public_water1)
+
+```
+
+```{r}
+glimpse(pfas_sites1)
+
+```
