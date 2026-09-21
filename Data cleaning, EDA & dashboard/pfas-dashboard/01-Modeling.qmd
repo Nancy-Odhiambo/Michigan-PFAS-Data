@@ -17,39 +17,251 @@ execute:
 library(tidyverse)
 library(readr)
 library(janitor)
+library(sf)
 ```
 
 ```{r}
 # Load all final cleaned datasets
 surface_water1 <- read_csv("surface_water1.csv")
-pfas_sites1 <- read_csv("pfas_sites1.csv")
-public_water1 <- read_csv("public_water1.csv")
-merged_data1 <- read_csv("merged_data1.csv")
+pfas_sites1    <- read_csv("pfas_sites1.csv")
+public_water1  <- read_csv("public_water1.csv")
+merged_data1   <- read_csv("merged_data1.csv")
 ```
 
 ```{r}
-# Load wells / aquifer characteristics data
-wells_data <- read_csv("Aquifer_Characteristics_Of_Glacial_Drift.csv")
+# Load the aquifer polygon layer. The shapefile's .dbf carries the same OBJECTID/AQU_UNIT/AQU_CHAR fields.
+aquifer <- st_read("Aquifer_Characteristics_Of_Glacial_Drift.shp", quiet = TRUE)
 ```
 
 ```{r}
-glimpse(wells)
+glimpse(aquifer)
 ```
+
 ```{r}
 glimpse(merged_data1)
 ```
 
 ```{r}
 glimpse(surface_water1)
-
 ```
 
 ```{r}
 glimpse(public_water1)
-
 ```
 
 ```{r}
 glimpse(pfas_sites1)
+```
 
+## Spatial Joins of aquifer, public water and pfas sites
+
+### Attaching aquifer characteristics to public_water1
+
+```{r}
+# Joining datasets
+water_locations <- public_water1 |>
+  distinct(hex_id, longitude, latitude) |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) # changing the data to spatial objects
+
+# Transforming to CRS from 4326 to aquifer
+water_locations_proj <- st_transform(water_locations, st_crs(aquifer))
+```
+
+```{r}
+## Spatially join aquifer attributes onto each location, then drop geometry to get a plain hex_id lookup table
+water_aquifer <- water_locations_proj |>
+  st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
+  st_drop_geometry() |>
+  select(hex_id, AQU_UNIT, AQU_CHAR)
+```
+
+```{r}
+# Check match rate before proceeding, the total locations joined, those that dont have aquifer match 
+water_aquifer |>
+  summarise(total = n(),
+            missing = sum(is.na(AQU_UNIT)),
+            pct_missing = round(mean(is.na(AQU_UNIT)) * 100, 1))
+```
+
+```{r}
+# Pull out the locations that failed to match an aquifer polygon
+unmatched <- water_locations_proj |>
+  st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
+  filter(is.na(AQU_UNIT))
+
+nrow(unmatched)   # should be 77
+
+# Look at where they are
+unmatched |>
+  st_drop_geometry() |>
+  select(hex_id, longitude, latitude)
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = aquifer, fill = "grey90", color = "grey60") +
+  geom_sf(data = unmatched, color = "#eb6834", size = 1.5) +
+  labs(title = "Public-water locations with no aquifer match") +
+  theme_minimal()
+```
+
+### Connect public water to nearby PFAS sites (distance-based, not geoid)
+
+```{r}
+# Convert PFAS sites to sf points, reproject to match the aquifer's projected CRS so distance calculations are in meters, not degrees
+pfas_sites_sf   <- pfas_sites1 |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+pfas_sites_proj <- st_transform(pfas_sites_sf, st_crs(aquifer))
+```
+
+```{r}
+# Nearest PFAS site to each public-water location(connecting public water to pfas site)
+# For every water location check across PFAS sites and return the closest one
+nearest_idx  <- st_nearest_feature(water_locations_proj, pfas_sites_proj)
+nearest_dist <- st_distance(water_locations_proj, pfas_sites_proj[nearest_idx, ], by_element = TRUE)
+
+water_pfas_nearest <- water_locations_proj |>
+  st_drop_geometry() |>
+  select(hex_id) |>
+  mutate(
+    distance_to_nearest_site_m = as.numeric(nearest_dist),
+    nearest_site_facility = pfas_sites_proj$facility[nearest_idx],
+    nearest_site_type     = pfas_sites_proj$type[nearest_idx]
+  )
+```
+
+```{r}
+# Count of PFAS sites within a set radius (e.g. 5 km) -- adjust threshold as needed
+within_5km <- st_is_within_distance(water_locations_proj, pfas_sites_proj, dist = 5000)
+
+water_pfas_nearest <- water_pfas_nearest |>
+  mutate(
+    n_sites_within_5km = lengths(within_5km),
+    pfas_site_nearby    = n_sites_within_5km > 0
+  )
+```
+
+```{r}
+# Classify PFAS sites themselves by aquifer, so you can ask should answer questions like "are known sites concentrated in certain aquifer types?"
+pfas_sites_aquifer <- pfas_sites_proj |>
+  st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
+  st_drop_geometry()
+```
+
+### Combine into one joined dataset
+
+```{r}
+# One row per public-water observation per hex_id x analyte with aquifer characteristics and proximity-based with known PFAS sites
+modeling_data <- public_water1 |>
+  left_join(water_aquifer, by = "hex_id") |>
+  left_join(water_pfas_nearest, by = "hex_id")
+
+glimpse(modeling_data)
+```
+
+```{r}
+write_csv(modeling_data, "modeling_data.csv")
+```
+
+## Exploratory Analysis of the Joined Dataset
+
+```{r}
+# Create location level object
+location_level <- modeling_data |>
+  distinct(hex_id, system_name, system_type, Hazard_Index,
+           AQU_UNIT, AQU_CHAR, distance_to_nearest_site_m,
+           nearest_site_type, n_sites_within_5km, pfas_site_nearby)
+
+# Confirm there is "one value per location" 
+location_level |>
+  count(hex_id) |>
+  filter(n > 1)
+
+nrow(location_level)
+```
+
+### Aquifer coverage
+
+```{r}
+location_level |>
+  summarise(
+    total_locations = n(),
+    missing_aquifer  = sum(is.na(AQU_UNIT)),
+    pct_missing      = round(mean(is.na(AQU_UNIT)) * 100, 1)
+  )
+```
+
+```{r}
+location_level |>
+  count(AQU_CHAR, sort = TRUE)
+```
+
+### Hazard Index by aquifer type
+
+```{r}
+hazard_by_aquifer <- location_level |>
+  filter(!is.na(AQU_CHAR)) |>
+  group_by(AQU_CHAR) |>
+  summarise(
+    mean_hazard = mean(Hazard_Index, na.rm = TRUE),
+    n_locations = n(),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mean_hazard))
+
+hazard_by_aquifer
+```
+
+```{r}
+ggplot(hazard_by_aquifer, aes(x = reorder(AQU_CHAR, mean_hazard), y = mean_hazard)) +
+  geom_col(fill = "#2a78d6", width = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Mean Hazard Index by Aquifer Characteristic",
+    x = NULL, y = "Mean Hazard Index"
+  ) +
+  theme_minimal()
+```
+
+### Proximity to known PFAS sites
+
+```{r}
+location_level |>
+  group_by(pfas_site_nearby) |>
+  summarise(
+    mean_hazard   = mean(Hazard_Index, na.rm = TRUE),
+    median_hazard = median(Hazard_Index, na.rm = TRUE),
+    n_locations   = n(),
+    .groups = "drop"
+  )
+```
+
+```{r}
+ggplot(location_level, aes(x = pfas_site_nearby, y = Hazard_Index, fill = pfas_site_nearby)) +
+  geom_boxplot(width = 0.5) +
+  scale_fill_manual(values = c("TRUE" = "#eb6834", "FALSE" = "#2a78d6"), guide = "none") +
+  labs(
+    title = "Hazard Index: Locations Near vs. Not Near a Known PFAS Site",
+    x = "PFAS site within 5 km", y = "Hazard Index"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(location_level, aes(x = distance_to_nearest_site_m, y = Hazard_Index)) +
+  geom_point(color = "#2a78d6", alpha = 0.5) +
+  labs(
+    title = "Hazard Index vs. Distance to Nearest Known PFAS Site",
+    x = "Distance to nearest site (m)", y = "Hazard Index"
+  ) +
+  theme_minimal()
+```
+
+### Aquifer type x PFAS-site proximity
+
+```{r}
+location_level |>
+  filter(!is.na(AQU_CHAR)) |>
+  count(AQU_CHAR, pfas_site_nearby) |>
+  pivot_wider(names_from = pfas_site_nearby, values_from = n, values_fill = 0)
 ```
