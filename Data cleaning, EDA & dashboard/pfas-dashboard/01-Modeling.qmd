@@ -163,6 +163,12 @@ glimpse(modeling_data)
 write_csv(modeling_data, "modeling_data.csv")
 ```
 
+Reencoding the Aquifer Characteristics
+
+```{r}
+
+```
+
 ## Exploratory Analysis of the Joined Dataset
 
 ```{r}
