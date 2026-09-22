@@ -166,7 +166,59 @@ write_csv(modeling_data, "modeling_data.csv")
 Reencoding the Aquifer Characteristics
 
 ```{r}
+# Checking the the exact aquifer codes and their full descriptions before recoding
+modeling_data |>
+  distinct(AQU_UNIT, AQU_CHAR) |>
+  arrange(AQU_UNIT)
+```
 
+```{r}
+# Connect AQU_UNIT to a clean, chart-friendly label based on the EGLE aquifer-characteristics description
+modeling_data <- modeling_data |>
+  mutate(
+    aquifer_label = case_when(
+      AQU_UNIT == "1"               ~ "I: Thin drift over bedrock",
+      AQU_UNIT == "2"               ~ "II: Drift generally not an aquifer",
+      AQU_UNIT %in% c("3a", "3aX")  ~ "IIIA: Interbedded, unconfined near surface",
+      AQU_UNIT %in% c("3b", "3bX")  ~ "IIIB: Interbedded, variable near surface",
+      AQU_UNIT == "4"               ~ "IV: Possible aquifer, undelineated",
+      TRUE ~ NA_character_
+    ),
+    aquifer_label = factor(
+      aquifer_label,
+      levels = c(
+        "I: Thin drift over bedrock",
+        "II: Drift generally not an aquifer",
+        "IIIA: Interbedded, unconfined near surface",
+        "IIIB: Interbedded, variable near surface",
+        "IV: Possible aquifer, undelineated"
+      )
+    )
+  )
+
+# Confirming every AQU_UNIT code mapped to a label as expected
+modeling_data |>
+  distinct(hex_id, aquifer_label) |>
+  count(aquifer_label, sort = TRUE)
+```
+
+```{r}
+# Confirming the known pfas site connection to aquifers
+pfas_sites_aquifer <- pfas_sites_aquifer |>
+  mutate(
+    aquifer_label = case_when(
+      AQU_UNIT == "1"               ~ "I: Thin drift over bedrock",
+      AQU_UNIT == "2"               ~ "II: Drift generally not an aquifer",
+      AQU_UNIT %in% c("3a", "3aX")  ~ "IIIA: Interbedded, unconfined near surface",
+      AQU_UNIT %in% c("3b", "3bX")  ~ "IIIB: Interbedded, variable near surface",
+      AQU_UNIT == "4"               ~ "IV: Possible aquifer, undelineated",
+      TRUE ~ NA_character_
+    )
+  )
+
+pfas_sites_aquifer |>
+  count(aquifer_label) |>
+  arrange(aquifer_label)
 ```
 
 ## Exploratory Analysis of the Joined Dataset
@@ -175,7 +227,7 @@ Reencoding the Aquifer Characteristics
 # Create location level object
 location_level <- modeling_data |>
   distinct(hex_id, system_name, system_type, Hazard_Index,
-           AQU_UNIT, AQU_CHAR, distance_to_nearest_site_m,
+           AQU_UNIT, aquifer_label, distance_to_nearest_site_m,
            nearest_site_type, n_sites_within_5km, pfas_site_nearby)
 
 # Confirm there is "one value per location" 
@@ -192,38 +244,40 @@ nrow(location_level)
 location_level |>
   summarise(
     total_locations = n(),
-    missing_aquifer  = sum(is.na(AQU_UNIT)),
-    pct_missing      = round(mean(is.na(AQU_UNIT)) * 100, 1)
+    missing_aquifer  = sum(is.na(aquifer_label)),
+    pct_missing      = round(mean(is.na(aquifer_label)) * 100, 1)
   )
 ```
 
 ```{r}
 location_level |>
-  count(AQU_CHAR, sort = TRUE)
+  count(aquifer_label) |>
+  arrange(aquifer_label)
 ```
 
 ### Hazard Index by aquifer type
 
 ```{r}
 hazard_by_aquifer <- location_level |>
-  filter(!is.na(AQU_CHAR)) |>
-  group_by(AQU_CHAR) |>
+  filter(!is.na(aquifer_label)) |>
+  group_by(aquifer_label) |>
   summarise(
     mean_hazard = mean(Hazard_Index, na.rm = TRUE),
     n_locations = n(),
     .groups = "drop"
   ) |>
-  arrange(desc(mean_hazard))
+  arrange(aquifer_label)
 
 hazard_by_aquifer
 ```
 
 ```{r}
-ggplot(hazard_by_aquifer, aes(x = reorder(AQU_CHAR, mean_hazard), y = mean_hazard)) +
-  geom_col(fill = "#2a78d6", width = 0.7) +
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = mean_hazard)) +
+  geom_col(fill = "darkorange", width = 0.7) +
   coord_flip() +
+  scale_x_discrete(limits = rev) +
   labs(
-    title = "Mean Hazard Index by Aquifer Characteristic",
+    title = "Mean Hazard Index by Aquifer Type",
     x = NULL, y = "Mean Hazard Index"
   ) +
   theme_minimal()
@@ -267,7 +321,7 @@ ggplot(location_level, aes(x = distance_to_nearest_site_m, y = Hazard_Index)) +
 
 ```{r}
 location_level |>
-  filter(!is.na(AQU_CHAR)) |>
-  count(AQU_CHAR, pfas_site_nearby) |>
+  filter(!is.na(aquifer_label)) |>
+  count(aquifer_label, pfas_site_nearby) |>
   pivot_wider(names_from = pfas_site_nearby, values_from = n, values_fill = 0)
 ```
