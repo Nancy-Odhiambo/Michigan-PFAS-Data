@@ -568,7 +568,7 @@ multi_location_systems |>
   arrange(desc(hazard_range))
 ```
 
-## Data Preparation for Modeling 
+## Data Preparation for Modeling
 
 ### Outcome variable: log(max Hazard Index)
 
@@ -626,7 +626,8 @@ candidate_cutoffs
 ```
 
 ```{r}
-# 10km sits at the median ~50th percentile of systems' closest-site distance, splitting them roughly evenly into "closer than typical" vs "farther than typical" 
+# 10km sits at the median (~50th percentile) of systems' closest-site distance, splitting
+# them roughly evenly into "closer than typical" vs "farther than typical"
 DISTANCE_CUTOFF_M <- 10000
 
 model_data <- model_data |>
@@ -654,13 +655,44 @@ ggplot(model_data, aes(x = min_distance_to_site_m, y = distance_capped_m)) +
   theme_minimal()
 ```
 
-### Simple linear regression: log(Hazard Index) on tapered distance 
+### Explanatory variable: log(1 + tapered distance)
 
 ```{r}
-# Recipe: formalizes the same log-transform and distance-cap used above, inside the modeling pipeline
+# x = log(1 + capped distance): softens the effect further even after capping, so both
+# the hard cutoff AND diminishing returns within it are captured in one predictor
+model_data <- model_data |>
+  mutate(log_distance = log1p(distance_capped_m))
+```
+
+```{r}
+# Compare raw capped distance vs. its log to see how much the log compresses the range
+model_data |>
+  summarise(
+    min_capped   = round(min(distance_capped_m), 0),
+    max_capped   = round(max(distance_capped_m), 0),
+    min_log_dist = round(min(log_distance), 2),
+    max_log_dist = round(max(log_distance), 2)
+  )
+```
+
+```{r}
+ggplot(model_data, aes(x = distance_capped_m, y = log_distance)) +
+  geom_point(color = "#1baf7a", alpha = 0.4) +
+  labs(
+    title = "Tapered Distance vs. log(1 + Tapered Distance)",
+    x = "Capped distance (m)", y = "log(1 + Capped distance)"
+  ) +
+  theme_minimal()
+```
+
+### Simple linear regression: log(Hazard Index) on log(tapered distance)
+
+```{r}
+# Recipe: caps distance, then logs BOTH the capped distance and the outcome (log-log model)
 pfas_recipe <- recipe(max_hazard ~ min_distance_to_site_m, data = model_data) |>
   step_mutate(distance_capped_m = pmin(min_distance_to_site_m, DISTANCE_CUTOFF_M)) |>
-  step_rm(min_distance_to_site_m) |>
+  step_mutate(log_distance = log(distance_capped_m + 1)) |>
+  step_rm(min_distance_to_site_m, distance_capped_m) |>
   step_log(max_hazard, offset = 1)
 ```
 
@@ -679,22 +711,30 @@ pfas_fit <- fit(pfas_workflow, data = model_data)
 ```
 
 ```{r}
-# tidy() = coefficient table (term, estimate, std.error, statistic, p.value)
+# per 1% change in (1 + tapered distance)
 tidy(pfas_fit)
 ```
 
+The log_hazard when log_distance = 0 is 0.597.
+So exponential of (0.597) - 1 is 0.82 thus the baseline prediction for a system at distance zero is a Hazard Index around 0.82 even at zero distance, which means distance alone isn't enough to push the typical prediction over the line.
+
+The log distance estimate shows that being further away from a known site is connected to having a lower Hazard Index. There is 0.062% change in (1 + Hazard Index) per 1% increase in (1 + capped distance)
+
+All these are significat to the model according to the p-values
 ```{r}
 # glance() = one-row model fit summary (R-squared, adjusted R-squared, etc.)
 glance(pfas_fit)
 ```
 
+The model only explains 2% which then means that distance alone cannot be used as a measure of the influence of hazard index however this r squared value is significant according to the p-value which is significantly very low
+
 ```{r}
-ggplot(model_data, aes(x = distance_capped_m, y = log_hazard)) +
+ggplot(model_data, aes(x = log_distance, y = log_hazard)) +
   geom_point(color = "#2a78d6", alpha = 0.4) +
   geom_smooth(method = "lm", color = "#eb6834", se = TRUE) +
   labs(
-    title = "log(Max Hazard Index) vs. Tapered Distance to Nearest PFAS Site",
-    x = "Capped distance to nearest site (m)", y = "log(1 + Max Hazard Index)"
+    title = "log(Max Hazard Index) vs. log(1 + Tapered Distance to Nearest PFAS Site)",
+    x = "log(1 + Capped distance to nearest site)", y = "log(1 + Max Hazard Index)"
   ) +
   theme_minimal()
 ```
