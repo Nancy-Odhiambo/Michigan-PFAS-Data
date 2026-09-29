@@ -18,10 +18,11 @@ library(tidyverse)
 library(readr)
 library(janitor)
 library(sf)
+library(tidymodels)
 ```
 
 ```{r}
-# Load all final cleaned datasets
+# Load the cleaned source datasets
 surface_water1 <- read_csv("surface_water1.csv")
 pfas_sites1    <- read_csv("pfas_sites1.csv")
 public_water1  <- read_csv("public_water1.csv")
@@ -29,7 +30,7 @@ merged_data1   <- read_csv("merged_data1.csv")
 ```
 
 ```{r}
-# Load the aquifer polygon layer. The shapefile's .dbf carries the same OBJECTID/AQU_UNIT/AQU_CHAR fields.
+# Load the aquifer polygon layer (OBJECTID/AQU_UNIT/AQU_CHAR fields)
 aquifer <- st_read("Aquifer_Characteristics_Of_Glacial_Drift.shp", quiet = TRUE)
 ```
 
@@ -58,17 +59,16 @@ glimpse(pfas_sites1)
 ### Attaching aquifer characteristics to public_water1
 
 ```{r}
-# Joining datasets
+# Collapse to one row per unique sampling location and convert to spatial points
 water_locations <- public_water1 |>
   distinct(hex_id, longitude, latitude) |>
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) # changing the data to spatial objects
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
 
-# Transforming to CRS from 4326 to aquifer
 water_locations_proj <- st_transform(water_locations, st_crs(aquifer))
 ```
 
 ```{r}
-## Spatially join aquifer attributes onto each location, then drop geometry to get a plain hex_id lookup table
+# Attach aquifer attributes to each location by spatial join, then drop back to a plain table
 water_aquifer <- water_locations_proj |>
   st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
   st_drop_geometry() |>
@@ -76,11 +76,13 @@ water_aquifer <- water_locations_proj |>
 ```
 
 ```{r}
-# Check match rate before proceeding, the total locations joined, those that dont have aquifer match 
+# n_locations = total sampling locations; n_missing_aquifer = locations with no aquifer match
 water_aquifer |>
-  summarise(total = n(),
-            missing = sum(is.na(AQU_UNIT)),
-            pct_missing = round(mean(is.na(AQU_UNIT)) * 100, 1))
+  summarise(
+    n_locations       = n(),
+    n_missing_aquifer = sum(is.na(AQU_UNIT)),
+    pct_missing       = round(mean(is.na(AQU_UNIT)) * 100, 1)
+  )
 ```
 
 ```{r}
@@ -91,13 +93,13 @@ unmatched <- water_locations_proj |>
 
 nrow(unmatched)   # should be 77
 
-# Look at where they are
 unmatched |>
   st_drop_geometry() |>
   select(hex_id, longitude, latitude)
 ```
 
 ```{r}
+# Map the unmatched points to confirm they sit on Great Lakes shorelines, not a join bug
 ggplot() +
   geom_sf(data = aquifer, fill = "grey90", color = "grey60") +
   geom_sf(data = unmatched, color = "#eb6834", size = 1.5) +
@@ -105,18 +107,17 @@ ggplot() +
   theme_minimal()
 ```
 
-### Connect public water to nearby PFAS sites (distance-based, not geoid)
+### Connect public water to nearby PFAS sites (distance-based metric)
 
 ```{r}
-# Convert PFAS sites to sf points, reproject to match the aquifer's projected CRS so distance calculations are in meters, not degrees
+# Convert PFAS sites to spatial points, reproject to meters to match the aquifer CRS
 pfas_sites_sf   <- pfas_sites1 |>
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
 pfas_sites_proj <- st_transform(pfas_sites_sf, st_crs(aquifer))
 ```
 
 ```{r}
-# Nearest PFAS site to each public-water location(connecting public water to pfas site)
-# For every water location check across PFAS sites and return the closest one
+# For every water location, find the single closest PFAS site and its distance in meters
 nearest_idx  <- st_nearest_feature(water_locations_proj, pfas_sites_proj)
 nearest_dist <- st_distance(water_locations_proj, pfas_sites_proj[nearest_idx, ], by_element = TRUE)
 
@@ -131,7 +132,7 @@ water_pfas_nearest <- water_locations_proj |>
 ```
 
 ```{r}
-# Count of PFAS sites within a set radius (e.g. 5 km) -- adjust threshold as needed
+# Count how many PFAS sites (not just the nearest one) fall within a 5km radius
 within_5km <- st_is_within_distance(water_locations_proj, pfas_sites_proj, dist = 5000)
 
 water_pfas_nearest <- water_pfas_nearest |>
@@ -142,7 +143,7 @@ water_pfas_nearest <- water_pfas_nearest |>
 ```
 
 ```{r}
-# Classify PFAS sites themselves by aquifer, so you can ask should answer questions like "are known sites concentrated in certain aquifer types?"
+# Classify the PFAS sites themselves by aquifer, for a sites-level (not water-level) view
 pfas_sites_aquifer <- pfas_sites_proj |>
   st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
   st_drop_geometry()
@@ -151,7 +152,7 @@ pfas_sites_aquifer <- pfas_sites_proj |>
 ### Combine into one joined dataset
 
 ```{r}
-# One row per public-water observation per hex_id x analyte with aquifer characteristics and proximity-based with known PFAS sites
+# Attach the aquifer and PFAS-proximity lookup tables onto every public_water1 row
 modeling_data <- public_water1 |>
   left_join(water_aquifer, by = "hex_id") |>
   left_join(water_pfas_nearest, by = "hex_id")
@@ -166,14 +167,14 @@ write_csv(modeling_data, "modeling_data.csv")
 Reencoding the Aquifer Characteristics
 
 ```{r}
-# Checking the the exact aquifer codes and their full descriptions before recoding
+# Inspect the raw aquifer codes and their full text descriptions before recoding
 modeling_data |>
   distinct(AQU_UNIT, AQU_CHAR) |>
   arrange(AQU_UNIT)
 ```
 
 ```{r}
-# Connect AQU_UNIT to a clean, chart-friendly label based on the EGLE aquifer-characteristics description
+# Map each AQU_UNIT code to a short, chart-friendly ordered label
 modeling_data <- modeling_data |>
   mutate(
     aquifer_label = case_when(
@@ -196,14 +197,14 @@ modeling_data <- modeling_data |>
     )
   )
 
-# Confirming every AQU_UNIT code mapped to a label as expected
+# n_locations = distinct hex_id sampling locations in each aquifer label
 modeling_data |>
   distinct(hex_id, aquifer_label) |>
-  count(aquifer_label, sort = TRUE)
+  count(aquifer_label, name = "n_locations", sort = TRUE)
 ```
 
 ```{r}
-# Confirming the known pfas site connection to aquifers
+# Apply the same recoding to the PFAS-sites table (separate table, same lookup logic)
 pfas_sites_aquifer <- pfas_sites_aquifer |>
   mutate(
     aquifer_label = case_when(
@@ -216,54 +217,111 @@ pfas_sites_aquifer <- pfas_sites_aquifer |>
     )
   )
 
+# n_sites = known PFAS sites in each aquifer label
 pfas_sites_aquifer |>
-  count(aquifer_label) |>
+  count(aquifer_label, name = "n_sites") |>
   arrange(aquifer_label)
 ```
 
 ## Exploratory Analysis of the Joined Dataset
 
+Everything in this section works at the **hex_id which is the sampling location** for location-level modeling, before the system level analysis of the exact public water drinking sites are analysed
+
 ```{r}
-# Create location level object
+# Collapse modeling_data down to one row per sampling location (drop the analyte-level rows)
 location_level <- modeling_data |>
-  distinct(hex_id, system_name, system_type, Hazard_Index,
+  distinct(hex_id, system_name, system_type, system_short, Hazard_Index,
            AQU_UNIT, aquifer_label, distance_to_nearest_site_m,
            nearest_site_type, n_sites_within_5km, pfas_site_nearby)
 
-# Confirm there is "one value per location" 
+# QA: n_rows_per_hex should be 1 for every hex_id (confirms one row per location)
 location_level |>
-  count(hex_id) |>
-  filter(n > 1)
+  count(hex_id, name = "n_rows_per_hex") |>
+  filter(n_rows_per_hex > 1)
 
 nrow(location_level)
 ```
 
+This chunk collapses modeling_data from 45,080 analyte-level rows down to 1,610 rows — one per sampling location by keeping only the columns that don't vary by analyte (Hazard_Index, aquifer, distance, etc.) and dropping the duplicate rows that resulted from testing 28 different chemicals at each location.No hex_id ended up with more than one row and the final count is 1,610 rows.
+
+### Understanding the location hierarchy: hex_id -> system_name -> system_type
+
+```{r}
+# hex_id = one sampling spot; system_name = the utility it belongs to; system_type = its category
+location_level |>
+  summarise(
+    n_hex_ids       = n_distinct(hex_id),
+    n_water_systems = n_distinct(system_name),
+    n_system_types  = n_distinct(system_type)
+  )
+```
+
+There are water locations that have more than one sampling location that is why the hex-ids dont match the sytem name
+
+```{r}
+# Each hex_id should have exactly one system_name, each system_name exactly one system_type
+location_level |>
+  group_by(hex_id) |>
+  summarise(n_system_names = n_distinct(system_name), .groups = "drop") |>
+  filter(n_system_names > 1)   
+location_level |>
+  group_by(system_name) |>
+  summarise(n_system_types = n_distinct(system_type), .groups = "drop") |>
+  filter(n_system_types > 1)   
+```
+
+Confirms that every system name or water sytem has one sytem type
+
+```{r}
+# n_hex_ids = sampling locations per water system; summarised to see the typical spread
+location_level |>
+  count(system_name, name = "n_hex_ids") |>
+  summarise(
+    min_locations    = min(n_hex_ids),
+    median_locations = median(n_hex_ids),
+    max_locations    = max(n_hex_ids)
+  )
+```
+
+Most water syetms have 1 sampling location however there are some that have upto 9 locations that is why we shrink it to the highest 
+
 ### Aquifer coverage
 
 ```{r}
+# n_locations = all sampling locations; n_missing_aquifer = those with no aquifer_label
 location_level |>
   summarise(
-    total_locations = n(),
-    missing_aquifer  = sum(is.na(aquifer_label)),
-    pct_missing      = round(mean(is.na(aquifer_label)) * 100, 1)
+    n_locations       = n(),
+    n_missing_aquifer = sum(is.na(aquifer_label)),
+    pct_missing       = round(mean(is.na(aquifer_label)) * 100, 1)
   )
 ```
 
 ```{r}
+# n_locations = distinct sampling locations per aquifer type
 location_level |>
-  count(aquifer_label) |>
+  count(aquifer_label, name = "n_locations") |>
   arrange(aquifer_label)
 ```
 
-### Hazard Index by aquifer type
+### Hazard Index by aquifer type 
 
 ```{r}
+### Hazard Index by aquifer type
+
+# pct_detected = share of locations with ANY detectable PFAS (median is uninformative
+# here since 86% of all locations read exactly 0, so median = 0 for every aquifer type)
+# p90_hazard = 90th percentile, a "how bad for the worse 10%" measure median can't give
 hazard_by_aquifer <- location_level |>
   filter(!is.na(aquifer_label)) |>
   group_by(aquifer_label) |>
   summarise(
-    mean_hazard = mean(Hazard_Index, na.rm = TRUE),
-    n_locations = n(),
+    pct_detected  = round(100 * mean(Hazard_Index > 0, na.rm = TRUE), 1),
+    mean_hazard   = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    p90_hazard    = round(quantile(Hazard_Index, 0.90, na.rm = TRUE), 3),
+    max_value     = round(max(Hazard_Index, na.rm = TRUE), 2),
+    n_locations   = n(),
+    water_systems = n_distinct(system_name),
     .groups = "drop"
   ) |>
   arrange(aquifer_label)
@@ -272,26 +330,114 @@ hazard_by_aquifer
 ```
 
 ```{r}
+# Mean Hazard Index per aquifer type, sensitive to a few extreme hotspot locations
 ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = mean_hazard)) +
   geom_col(fill = "darkorange", width = 0.7) +
   coord_flip() +
   scale_x_discrete(limits = rev) +
+  labs(title = "Mean Hazard Index by Aquifer Type", x = NULL, y = "Mean Hazard Index") +
+  theme_minimal()
+```
+
+```{r}
+# Share of locations with any detectable PFAS -- replaces median, which is 0 everywhere
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = pct_detected)) +
+  geom_col(fill = "#2a78d6", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "Percent of Locations with Detectable PFAS by Aquifer Type", x = NULL, y = "% Locations Detected") +
+  theme_minimal()
+```
+
+```{r}
+# 90th percentile Hazard Index per aquifer type -- how bad it gets for the worse 10%
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = p90_hazard)) +
+  geom_col(fill = "#1baf7a", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "90th Percentile Hazard Index by Aquifer Type", x = NULL, y = "90th Percentile Hazard Index") +
+  theme_minimal()
+```
+
+```{r}
+# Max Hazard Index per aquifer type, the worst single location, a precautionary read
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = max_value)) +
+  geom_col(fill = "#eb6834", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "Max Hazard Index by Aquifer Type", x = NULL, y = "Max Hazard Index") +
+  theme_minimal()
+```
+
+mean and pct_detected tell you how widespread contamination is within each aquifer type, while p90 and max tell you how severe it gets at the tail. Reading them together: an aquifer type with low pct_detected but a high max_value means it's mostly clean with one bad outlier; high pct_detected and high p90 together means contamination is broadly present, not just a fluke.
+
+### Hazard Index by system type 
+
+```{r}
+# system_short = short code (e.g. SCH, MUN) standing in for the long system_type description
+hazard_by_system_type <- location_level |>
+  group_by(system_short) |>
+  summarise(
+    mean_hazard   = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    median_hazard = round(median(Hazard_Index, na.rm = TRUE), 2),
+    n_locations   = n(),
+    water_systems = n_distinct(system_name),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mean_hazard))
+
+hazard_by_system_type
+```
+
+```{r}
+ggplot(hazard_by_system_type, aes(x = reorder(system_short, mean_hazard), y = mean_hazard)) +
+  geom_col(fill = "darkorange", width = 0.7) +
+  coord_flip() +
   labs(
-    title = "Mean Hazard Index by Aquifer Type",
+    title = "Mean Hazard Index by System Type",
     x = NULL, y = "Mean Hazard Index"
   ) +
   theme_minimal()
 ```
 
-### Proximity to known PFAS sites
+### What the PFAS-site distance metrics actually measure
 
 ```{r}
+# distance_to_nearest_site_m = straight-line distance to the single closest known PFAS site
+location_level |>
+  summarise(
+    min_dist_m    = round(min(distance_to_nearest_site_m, na.rm = TRUE), 0),
+    median_dist_m = round(median(distance_to_nearest_site_m, na.rm = TRUE), 0),
+    mean_dist_m   = round(mean(distance_to_nearest_site_m, na.rm = TRUE), 0),
+    max_dist_m    = round(max(distance_to_nearest_site_m, na.rm = TRUE), 0)
+  )
+```
+
+```{r}
+# n_locations = sampling locations with vs. without a known site within 5km
+location_level |>
+  count(pfas_site_nearby, name = "n_locations") |>
+  mutate(pct = round(100 * n_locations / sum(n_locations), 1))
+```
+
+```{r}
+# n_locations = sampling locations whose single nearest site is of that type
+location_level |>
+  filter(!is.na(nearest_site_type)) |>
+  count(nearest_site_type, name = "n_locations", sort = TRUE)
+```
+
+### Proximity to known PFAS sites (location grain)
+
+```{r}
+# water_systems = distinct utilities with vs. without a known site nearby
 location_level |>
   group_by(pfas_site_nearby) |>
   summarise(
     mean_hazard   = mean(Hazard_Index, na.rm = TRUE),
     median_hazard = median(Hazard_Index, na.rm = TRUE),
     n_locations   = n(),
+    water_systems = n_distinct(system_name),
     .groups = "drop"
   )
 ```
@@ -317,11 +463,238 @@ ggplot(location_level, aes(x = distance_to_nearest_site_m, y = Hazard_Index)) +
   theme_minimal()
 ```
 
-### Aquifer type x PFAS-site proximity
+### Aquifer type x PFAS-site proximity (location grain)
 
 ```{r}
+# n_locations = sampling locations in each aquifer x proximity combination
 location_level |>
   filter(!is.na(aquifer_label)) |>
-  count(aquifer_label, pfas_site_nearby) |>
-  pivot_wider(names_from = pfas_site_nearby, values_from = n, values_fill = 0)
+  count(aquifer_label, pfas_site_nearby, name = "n_locations") |>
+  pivot_wider(names_from = pfas_site_nearby, values_from = n_locations, values_fill = 0)
+```
+
+```{r}
+# Same cross-tab, but water_systems = distinct utilities instead of sampling locations
+location_level |>
+  filter(!is.na(aquifer_label)) |>
+  distinct(system_name, aquifer_label, pfas_site_nearby) |>
+  count(aquifer_label, pfas_site_nearby, name = "water_systems") |>
+  pivot_wider(names_from = pfas_site_nearby, values_from = water_systems, values_fill = 0)
+```
+
+## Water-System Level Analysis
+
+The project's real question is how badly **public water systems** This section rolls `location_level` up to
+one row per `system_name`, using `max_hazard` (the system's worst sampling point) as
+the headline number, since a public-health read should not let a few clean samples
+average away a real hotspot.
+
+### Rolling locations up to systems
+
+```{r}
+# One row per system_name: worst reading, typical reading, spread, and closest known-site distance
+system_hazard <- location_level |>
+  group_by(system_name, system_type) |>
+  summarise(
+    n_hex_ids               = n(),
+    max_hazard              = round(max(Hazard_Index, na.rm = TRUE), 2),
+    mean_hazard             = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    hazard_range            = round(max_hazard - min(Hazard_Index, na.rm = TRUE), 2),
+    min_distance_to_site_m  = round(min(distance_to_nearest_site_m, na.rm = TRUE)),
+    .groups = "drop"
+  ) |>
+  arrange(desc(max_hazard))
+
+nrow(system_hazard)   # should equal n_water_systems, not n_hex_ids
+system_hazard
+```
+
+```{r}
+# Top 15 worst-affected systems by their single highest Hazard Index reading
+top_systems <- system_hazard |> slice_head(n = 15)
+
+ggplot(top_systems, aes(x = reorder(system_name, max_hazard), y = max_hazard)) +
+  geom_col(fill = "#eb6834") +
+  coord_flip() +
+  labs(
+    title = "Water Systems with the Highest Hazard Index",
+    x = NULL, y = "Max Hazard Index (worst sampling location)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# n_systems_above_alert = systems with at least one reading at/above the EPA limit
+# (Hazard_Index = 1 means combined exposure across the four PFAS chemicals equals
+# their EPA health-based reference level; above 1 means it exceeds that limit)
+HAZARD_ALERT_THRESHOLD <- 1
+
+system_hazard |>
+  summarise(
+    n_water_systems       = n(),
+    n_systems_above_alert = sum(max_hazard > HAZARD_ALERT_THRESHOLD),
+    pct_above_alert       = round(100 * mean(max_hazard > HAZARD_ALERT_THRESHOLD), 1)
+  )
+```
+
+### Does spread between a system's own locations relate to its Hazard Index variability?
+
+```{r}
+# Only systems with more than one sampling location have a "spread" to measure
+multi_location_systems <- location_level |>
+  group_by(system_name) |>
+  filter(n() > 1) |>
+  summarise(
+    n_hex_ids    = n(),
+    hazard_range = round(max(Hazard_Index) - min(Hazard_Index), 2),
+    hazard_sd    = round(sd(Hazard_Index), 2),
+    .groups = "drop"
+  )
+
+nrow(multi_location_systems)   # how many systems this check even applies to
+```
+
+```{r}
+# max_spread_m = farthest distance between any two of a system's own sampling points
+system_spread <- water_locations_proj |>
+  left_join(public_water1 |> distinct(hex_id, system_name), by = "hex_id") |>
+  semi_join(multi_location_systems, by = "system_name") |>
+  group_by(system_name) |>
+  group_modify(~ tibble(max_spread_m = as.numeric(max(st_distance(.x))))) |>
+  ungroup()
+
+multi_location_systems |>
+  left_join(system_spread, by = "system_name") |>
+  arrange(desc(hazard_range))
+```
+
+## Data Preparation for Modeling 
+
+### Outcome variable: log(max Hazard Index)
+
+```{r}
+# log1p handles Hazard_Index == 0 safely (log(0) is undefined, log1p(0) = 0)
+model_data <- system_hazard |>
+  filter(!is.na(min_distance_to_site_m)) |>
+  mutate(log_hazard = log1p(max_hazard))
+```
+
+```{r}
+# Compare raw vs. log-transformed distributions to check the log fixed the right-skew
+model_data |>
+  summarise(
+    mean_hazard        = round(mean(max_hazard), 2),
+    median_hazard      = round(median(max_hazard), 2),
+    mean_log_hazard    = round(mean(log_hazard), 2),
+    median_log_hazard  = round(median(log_hazard), 2)
+  )
+```
+
+```{r}
+ggplot(model_data, aes(x = log_hazard)) +
+  geom_histogram(fill = "#2a78d6", bins = 30) +
+  labs(
+    title = "Distribution of log(1 + Max Hazard Index) by Water System",
+    x = "log(1 + Max Hazard Index)", y = "Number of water systems"
+  ) +
+  theme_minimal()
+```
+
+### Choosing the distance cutoff empirically
+
+```{r}
+# Full distribution of each system's closest-known-site distance, to justify the cutoff
+model_data |>
+  summarise(
+    p25    = round(quantile(min_distance_to_site_m, 0.25, na.rm = TRUE)),
+    median = round(quantile(min_distance_to_site_m, 0.50, na.rm = TRUE)),
+    p75    = round(quantile(min_distance_to_site_m, 0.75, na.rm = TRUE)),
+    p90    = round(quantile(min_distance_to_site_m, 0.90, na.rm = TRUE))
+  )
+```
+
+```{r}
+# pct_capped = share of systems that would be pulled down to each candidate cutoff
+candidate_cutoffs <- tibble(cutoff_km = c(5, 7, 10, 12, 15)) |>
+  mutate(cutoff_m = cutoff_km * 1000)
+
+candidate_cutoffs$pct_capped <- sapply(candidate_cutoffs$cutoff_m, function(c) {
+  round(100 * mean(model_data$min_distance_to_site_m > c, na.rm = TRUE), 1)
+})
+
+candidate_cutoffs
+```
+
+```{r}
+# 10km sits at the median ~50th percentile of systems' closest-site distance, splitting them roughly evenly into "closer than typical" vs "farther than typical" 
+DISTANCE_CUTOFF_M <- 10000
+
+model_data <- model_data |>
+  mutate(distance_capped_m = pmin(min_distance_to_site_m, DISTANCE_CUTOFF_M))
+```
+
+```{r}
+# n_capped = how many systems actually got pulled down to the cutoff
+model_data |>
+  summarise(
+    n_water_systems = n(),
+    n_capped        = sum(min_distance_to_site_m > DISTANCE_CUTOFF_M),
+    pct_capped      = round(100 * mean(min_distance_to_site_m > DISTANCE_CUTOFF_M), 1)
+  )
+```
+
+```{r}
+ggplot(model_data, aes(x = min_distance_to_site_m, y = distance_capped_m)) +
+  geom_point(color = "#2a78d6", alpha = 0.4) +
+  geom_hline(yintercept = DISTANCE_CUTOFF_M, color = "#eb6834", linetype = "dashed") +
+  labs(
+    title = "Raw vs. Tapered (Capped) Distance to Nearest PFAS Site",
+    x = "Raw distance (m)", y = "Capped distance (m)"
+  ) +
+  theme_minimal()
+```
+
+### Simple linear regression: log(Hazard Index) on tapered distance 
+
+```{r}
+# Recipe: formalizes the same log-transform and distance-cap used above, inside the modeling pipeline
+pfas_recipe <- recipe(max_hazard ~ min_distance_to_site_m, data = model_data) |>
+  step_mutate(distance_capped_m = pmin(min_distance_to_site_m, DISTANCE_CUTOFF_M)) |>
+  step_rm(min_distance_to_site_m) |>
+  step_log(max_hazard, offset = 1)
+```
+
+```{r}
+# Model spec: ordinary least squares via the "lm" engine, one predictor = "simple" regression
+lm_spec <- linear_reg() |> set_engine("lm")
+```
+
+```{r}
+# Workflow bundles the recipe (preprocessing) and the model spec together
+pfas_workflow <- workflow() |>
+  add_recipe(pfas_recipe) |>
+  add_model(lm_spec)
+
+pfas_fit <- fit(pfas_workflow, data = model_data)
+```
+
+```{r}
+# tidy() = coefficient table (term, estimate, std.error, statistic, p.value)
+tidy(pfas_fit)
+```
+
+```{r}
+# glance() = one-row model fit summary (R-squared, adjusted R-squared, etc.)
+glance(pfas_fit)
+```
+
+```{r}
+ggplot(model_data, aes(x = distance_capped_m, y = log_hazard)) +
+  geom_point(color = "#2a78d6", alpha = 0.4) +
+  geom_smooth(method = "lm", color = "#eb6834", se = TRUE) +
+  labs(
+    title = "log(Max Hazard Index) vs. Tapered Distance to Nearest PFAS Site",
+    x = "Capped distance to nearest site (m)", y = "log(1 + Max Hazard Index)"
+  ) +
+  theme_minimal()
 ```
