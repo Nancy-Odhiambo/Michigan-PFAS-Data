@@ -1960,14 +1960,6 @@ A system's ground type is taken from its highest-Hazard-Index location, the same
 
 About 86% of sampling locations read exactly zero and the rest are positive, right-skewed values. A **Tweedie** model is built for that shape: one model for a continuous outcome with a pile of exact zeros, fit on the raw `max_hazard`, so no `log1p` is needed. Adding **zero inflation** gives the zeros their own process, so a system can read zero because nothing was detected there (a structural zero) or because the Tweedie part happened to produce a zero.
 
-**Procedure**
-
-1. Fit the full zero-inflated Tweedie model on `max_hazard`, with the same candidate variables in the mean part and in the zero-inflation part.
-2. Run backward elimination by AIC and by BIC; a variable is dropped from both parts together.
-3. Refit the chosen variables, read both parts of the output, and compare against a plain Tweedie without zero inflation.
-
-**Key points**
-
 - **Mean part (log link):** the exponentiated estimate is the multiplicative change in the expected Hazard Index; for distance it should be below 1.
 - **Zero-inflation part (logit link):** the exponentiated estimate is the odds of a structural zero; for distance it should be above 1, because farther systems have more zeros.
 - A plain Tweedie can already produce zeros, so the zero-inflation part is weakly identified. Keep it only if AIC/BIC prefer it over the plain version.
@@ -2034,11 +2026,9 @@ The lower AIC/BIC of the two rows is the preferred version. If the zero-inflated
 About 86% of sampling locations read exactly zero, so the baseline line above has to explain two different things at once: why most systems sit at zero, and how bad the contamination is in the ones that do not. That is a big reason its R-squared is so low.
 
 A **hurdle model** splits this into two models:
-
 1. **Part 1, detection:** a logistic regression for whether a system detects any PFAS at all (`max_hazard > 0`). It uses every system.
 2. **Part 2, severity:** a linear regression of `log(1 + max_hazard)`, fit only on systems that did detect PFAS, so the zeros no longer flatten the line.
 
-Each part can have its own significant variables, so we can see what drives detection separately from what drives severity. Poisson-type zero-inflated models are for count outcomes, so they do not fit a continuous Hazard Index; the hurdle model is the continuous-data equivalent.
 
 ### Part 1: which variables predict detection (logistic regression)
 
@@ -2104,14 +2094,6 @@ Part 2 uses far fewer rows than Part 1, because only systems with detections are
 ## Automatic Variable Selection (Hurdle Model)
 
 The same AIC/BIC routine defined above is applied to each hurdle part. **Hurdle** describes the two-model structure; **AIC/BIC backward selection** (and, as a cross-check, LASSO) decides which variables each part keeps.
-
-**Procedure**
-
-1. Fit the full plain `glm()` (detection) and `lm()` (severity) with every candidate variable.
-2. Run backward elimination by AIC and by BIC and compare which variables survive.
-3. Take the result for `SELECTION_CRITERION`, read its odds ratios or estimates, and refit it in tidymodels so `predict()` works.
-
-**Key points**
 
 - Plain `glm()`/`lm()` are used here, instead of recipes, so a categorical variable is kept or dropped as a whole rather than as separate dummy columns.
 - Detection and severity can keep different variables; distance may matter for whether PFAS shows up but not for how high it gets.
@@ -2261,14 +2243,6 @@ tidy(severity_lasso_fit) |> filter(estimate != 0)
 ```
 
 ## Model Comparison: Baseline vs. Tweedie vs. Hurdle
-
-**Procedure**
-
-1. Refit the baseline log-linear model on the same systems the extended models use.
-2. Turn each model's output into a predicted Hazard Index on the original scale.
-3. Compare prediction error and average level side by side.
-
-**Key points**
 
 - AIC and BIC are only comparable between models with the same outcome and the same rows, so they are used to choose variables *within* each model, not to rank the three models against each other.
 - The baseline predicts `log(1 + max_hazard)`, so its predictions are converted back with `expm1()`; this tends to under-predict the average.
