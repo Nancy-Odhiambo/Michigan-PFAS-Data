@@ -14,6 +14,8 @@ website:
         href: index.qmd
       - text: "Hazard Analysis"
         href: 02-analysis.qmd
+      - text: "PFAS Modeling"
+        href: 01-Modeling.qmd
       - text: "About"
         href: about.qmd
 

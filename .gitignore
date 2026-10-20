@@ -8,3 +8,9 @@
 
 .Rproj.user
 .positai
+**/gSSURGO_MI.gdb/
+**/gSSURGO_MI.7z
+.RData
+.RDataTmp
+.Rhistory
+.Rproj.user/

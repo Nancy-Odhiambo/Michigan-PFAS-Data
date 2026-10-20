@@ -1,0 +1,2490 @@
+---
+title: "PFAS Modeling"
+format:
+  dashboard:
+    orientation: rows   
+    theme: flatly          
+    toc: true              
+    self-contained: true   
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true
+---
+
+## Workflow overview
+
+**Question.** Which public water systems in Michigan are most at risk of PFAS contamination, and how do distance to known PFAS sites, aquifer type and soil permeability explain it?
+
+**How the analysis flows**
+
+```{mermaid}
+flowchart TD
+  A["1. Load data<br/>public water, PFAS sites, aquifers, gSSURGO soil"] --> B["2. Spatial joins<br/>aquifer, soil permeability, nearest PFAS site"]
+  B --> C["3. Join audit<br/>what matched, what is missing, why"]
+  C --> D["4. Location-level exploration<br/>hazard by aquifer, system type, distance, permeability"]
+  D --> E["5. Aquifer and soil vs. risk (no distance)<br/>then pathway analysis with PFAS-site distance"]
+  E --> F["6. Roll up to water systems<br/>max Hazard Index per system"]
+  F --> G["7. Baseline<br/>log-linear model"]
+  G --> H["8. Zero-inflated Tweedie"]
+  H --> I["9. Hurdle<br/>detection + severity"]
+  I --> J["10. Automatic selection<br/>AIC / BIC, LASSO cross-check"]
+  J --> K["11. Model comparison<br/>+ spatial check"]
+  K --> L["12. Conclusions and limits"]
+```
+
+**Key decisions in one place**
+
+| Decision | Choice | Why |
+|---|---|---|
+| Unit of analysis | Water system, using its worst location (`max_hazard`) | A public-health read should not let clean samples average away a hotspot |
+| Outcome | `log(1 + max_hazard)` for linear models; raw `max_hazard` for Tweedie | 86% of readings are exactly zero and the rest are right-skewed |
+| Distance | `log(1 + distance)` to the nearest known PFAS site, no cap; for the extended models taken from the system's highest-Hazard-Index location (`DISTANCE_BASIS`) | Uses the full range; the log compresses the long tail; same spot as the aquifer and soil |
+| Soil | Permeability (harmonic mean of `ksat` over the top 100 cm, weighted by component percent, log10 scale) plus drainage class, hydrologic group, water table and bedrock depth, slope, organic carbon, available water storage and the droughty flag, all at the system's highest-Hazard-Index location | Layers act in series, and permeability spans orders of magnitude; the selection decides which other soil variables matter |
+| Model order | Baseline, then zero-inflated Tweedie, then hurdle | Simple to flexible; each is compared on the same systems |
+| Variable selection | Automatic backward elimination over all candidates, soil included; `n_hex_ids` always kept | AIC and BIC both run; the criterion used downstream is chosen automatically (BIC when there are fewer than 20 detected systems per candidate variable); `SELECTION_MODE` can force one |
+| Rows | Systems with an aquifer match and a permeability value | AIC/BIC need every candidate model on the same rows |
+
+**Packages used:** tidyverse, janitor, sf, tidymodels, glmmTMB (Tweedie), glmnet (LASSO), terra (soil map, first run only) and spdep (optional spatial check).
+
+```{r}
+library(tidyverse)
+library(readr)
+library(janitor)
+library(sf)
+library(tidymodels)
+library(glmmTMB)   # zero-inflated Tweedie model; install.packages("glmmTMB") if missing
+```
+
+```{r}
+# Load the cleaned source datasets
+surface_water1 <- read_csv("surface_water1.csv")
+pfas_sites1    <- read_csv("pfas_sites1.csv")
+public_water1  <- read_csv("public_water1.csv")
+merged_data1   <- read_csv("merged_data1.csv")
+```
+
+```{r}
+# Load the aquifer polygon layer (OBJECTID/AQU_UNIT/AQU_CHAR fields)
+aquifer <- st_read("Aquifer_Characteristics_Of_Glacial_Drift.shp", quiet = TRUE)
+```
+
+```{r}
+glimpse(aquifer)
+```
+
+```{r}
+glimpse(merged_data1)
+```
+
+```{r}
+glimpse(surface_water1)
+```
+
+```{r}
+glimpse(public_water1)
+```
+
+```{r}
+glimpse(pfas_sites1)
+```
+
+## Soil data (gSSURGO)
+The soil data is the Michigan gSSURGO geodatabase (`gSSURGO_MI.gdb`) from USDA-NRCS, downloaded from the [NRCS gSSURGO Box folder](https://nrcs.app.box.com/v/soils/folder/233398887779?page=2). The geodatabase has only **one map layer** (`MUPOLYGON`, the soil map). Every soil property sits in separate tables that link to it by key, so the polygons themselves carry IDs and no soil values.
+
+```{r}
+# Layers and tables inside the gSSURGO geodatabase, with row counts and geometry types
+st_layers("gSSURGO_MI.gdb")
+```
+
+The geodatabase has 78 layers, some have geometry type as NA meaning there is a plain table with no map shape that is no mupolygon also some have crs NA because the tables are non map
+
+```{r}
+# Soil map polygons (1.2M in total); only the first 1,000 are read here, just to see the column
+# names and types. They are NOT a sample of the state: the map and the join below use ALL polygons
+mupolygon_sample <- st_read("gSSURGO_MI.gdb",
+                            query = "SELECT * FROM MUPOLYGON LIMIT 1000", quiet = TRUE)
+glimpse(mupolygon_sample)
+```
+
+```{r}
+# Only the layers used in this analysis
+tibble(layer_name = st_layers("gSSURGO_MI.gdb")$name,
+       features   = st_layers("gSSURGO_MI.gdb")$features) |>
+  filter(layer_name %in% c("MUPOLYGON", "mapunit", "muaggatt", "Valu1", "component", "chorizon"))
+
+```
+
+### What each soil table is and how it is used
+
+| Table | Rows | One row represents | Key fields | Used for | Importance |
+|---|---|---|---|---|---|
+| `MUPOLYGON` | 1,207,754 | A soil map polygon (a shape on the map) | `MUKEY` | Matching each sampling location to a soil map unit, and drawing the soil map | Essential |
+| `mapunit` | 10,664 | A soil map unit (a named group of soils) | `mukey` | Reference names only; no model variable comes from it | Low |
+| `muaggatt` | 10,664 | A map unit, with ready-made summaries | `mukey` | Drainage class, hydrologic group, water table depth, bedrock depth, slope | High |
+| `Valu1` | 10,664 | A map unit, with pre-computed values | `mukey` | Organic carbon, available water storage, droughty flag | Medium |
+| `component` | 36,240 | A soil type inside a map unit | `mukey`, `cokey`, `comppct_r` | Linking map units to soil layers; `comppct_r` (percent of the map unit) is the weight when averaging | High |
+| `chorizon` | 165,958 | A soil layer (horizon) of a soil type | `cokey`, `ksat_r`, `hzdept_r`, `hzdepb_r` | The only source of permeability (`ksat_r`) | High |
+
+The tables connect in one chain: a sampling location falls inside a `MUPOLYGON` polygon, which gives its `MUKEY`. `muaggatt`, `Valu1` and `mapunit` have one row per `MUKEY`, so they join directly. Permeability takes extra steps: `chorizon` layers (linked by `cokey`) roll up to `component`, then to the map unit. About 1.2 million polygons point to only about 10,000 distinct map units, so many polygons share the same soil properties.
+
+```{r}
+# One row per soil map unit: map unit names and status
+mapunit <- st_read("gSSURGO_MI.gdb", layer = "mapunit", quiet = TRUE) |> as_tibble()
+glimpse(mapunit)
+```
+
+```{r}
+# One row per map unit: aggregated soil properties (drainage, water table, bedrock depth, etc.)
+muaggatt <- st_read("gSSURGO_MI.gdb", layer = "muaggatt", quiet = TRUE) |> as_tibble()
+glimpse(muaggatt)
+```
+
+```{r}
+# One row per map unit: pre-computed values (organic carbon, available water, crop indices)
+valu1 <- st_read("gSSURGO_MI.gdb", layer = "Valu1", quiet = TRUE) |> as_tibble()
+glimpse(valu1)
+```
+
+```{r}
+# One row per soil component (several components can share a map unit)
+component <- st_read("gSSURGO_MI.gdb", layer = "component", quiet = TRUE) |> as_tibble()
+glimpse(component)
+```
+
+```{r}
+# One row per soil horizon (layer) of a component; holds the permeability column ksat_r
+chorizon <- st_read("gSSURGO_MI.gdb", layer = "chorizon", quiet = TRUE) |> as_tibble()
+glimpse(chorizon)
+```
+
+The soil tables fit together like this: `MUPOLYGON` (the map, about 1.2 million polygons) points to about 10,664 distinct map units through `MUKEY`, so many polygons share the same soil properties. `mapunit`, `muaggatt` and `Valu1` have one row per soil map unit (linked to the polygons by `mukey`), `component` has one row per soil type inside a map unit, and `chorizon` has one row per soil layer inside a component (linked by `cokey`). Permeability lives in `chorizon`.
+
+## Spatial Joins of aquifer, soil, public water and pfas sites
+
+### Attaching aquifer characteristics to public_water1
+
+```{r}
+# Collapse to one row per unique sampling location and convert to spatial points
+water_locations <- public_water1 |>
+  distinct(hex_id, longitude, latitude) |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+water_locations_proj <- st_transform(water_locations, st_crs(aquifer))
+```
+
+```{r}
+# Attach aquifer attributes to each location by spatial join, then drop back to a plain table
+water_aquifer <- water_locations_proj |>
+  st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
+  st_drop_geometry() |>
+  select(hex_id, AQU_UNIT, AQU_CHAR)
+```
+
+```{r}
+# n_locations = total sampling locations; n_missing_aquifer = locations with no aquifer match
+water_aquifer |>
+  summarise(
+    n_locations       = n(),
+    n_missing_aquifer = sum(is.na(AQU_UNIT)),
+    pct_missing       = round(mean(is.na(AQU_UNIT)) * 100, 1)
+  )
+```
+
+```{r}
+# Pull out the locations that failed to match an aquifer polygon
+unmatched <- water_locations_proj |>
+  st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
+  filter(is.na(AQU_UNIT))
+
+nrow(unmatched)   # should be 77
+
+unmatched |>
+  st_drop_geometry() |>
+  select(hex_id, longitude, latitude)
+```
+
+```{r}
+# Map of the unmatched points 
+ggplot() +
+  geom_sf(data = aquifer, fill = "grey90", color = "grey60") +
+  geom_sf(data = unmatched, color = "#eb6834", size = 1.5) +
+  labs(title = "Public-water locations with no aquifer match") +
+  theme_minimal()
+```
+
+### Attaching soil characteristics (gSSURGO) to public_water1
+
+The gSSURGO geodatabase works in two steps: each sampling location is matched by point-in-polygon to a soil map unit (its `MUKEY`), and then `MUKEY` is used to join the soil attribute tables. Soil permeability is built first, on its own, so it can be inspected and mapped before any join happens.
+
+#### Soil permeability (saturated hydraulic conductivity)
+
+Permeability here is the saturated hydraulic conductivity `ksat_r` (micrometers per second): how fast water, and anything dissolved in it, can move down through the soil. It is stored per soil horizon, so it has to be averaged up to the map unit.
+
+```{r}
+# Per component: harmonic-mean ksat over the top 100 cm layers in series, so the tightest layer limits flow
+component_ksat <- chorizon |>
+  mutate(thick_cm = pmax(0, pmin(hzdepb_r, 100) - pmax(hzdept_r, 0))) |>
+  filter(thick_cm > 0, !is.na(ksat_r), ksat_r > 0) |>
+  group_by(cokey) |>
+  summarise(ksat_100cm = sum(thick_cm) / sum(thick_cm / ksat_r), .groups = "drop")
+
+# Per map unit: components weighted by their percent of the map unit, then the standard NRCS classes
+soil_perm <- component |>
+  inner_join(component_ksat, by = "cokey") |>
+  group_by(mukey) |>
+  summarise(ksat_100cm = weighted.mean(ksat_100cm, comppct_r, na.rm = TRUE), .groups = "drop") |>
+  mutate(
+    perm_class = cut(
+      ksat_100cm,
+      breaks = c(0, 0.01, 0.1, 1, 10, 100, Inf), right = FALSE,
+      labels = c("Very low", "Low", "Moderately low", "Moderately high", "High", "Very high")
+    ),
+    perm_code = as.integer(perm_class)
+  )
+
+glimpse(soil_perm)
+```
+
+```{r}
+# n_mukeys_with_ksat = map units that ended up with a permeability value; then the spread of values
+soil_perm |>
+  summarise(
+    n_mukeys_with_ksat = n(),
+    min_ksat    = round(min(ksat_100cm), 3),
+    median_ksat = round(median(ksat_100cm), 2),
+    mean_ksat   = round(mean(ksat_100cm), 2),
+    max_ksat    = round(max(ksat_100cm), 1)
+  )
+```
+
+```{r}
+# Coverage: n_mukeys_total = all map units in muaggatt; n_mukeys_no_ksat = those with no permeability value
+muaggatt |>
+  summarise(
+    n_mukeys_total   = n_distinct(mukey),
+    n_mukeys_no_ksat = sum(!mukey %in% soil_perm$mukey),
+    pct_no_ksat      = round(100 * mean(!mukey %in% soil_perm$mukey), 1)
+  )
+```
+
+```{r}
+# n_mukeys = map units in each permeability class
+soil_perm |>
+  count(perm_class, name = "n_mukeys") |>
+  mutate(share = round(n_mukeys / sum(n_mukeys), 3))
+```
+
+```{r}
+# Distribution of map-unit permeability; log scale because values span several orders of magnitude
+soil_perm |>
+  ggplot(aes(x = ksat_100cm)) +
+  geom_histogram(bins = 40, fill = "#2a78d6") +
+  scale_x_log10() +
+  labs(
+    title = "Soil Permeability of Michigan Map Units (top 100 cm)",
+    x = "ksat, top 100 cm (micrometers per second, log scale)", y = "Number of map units"
+  ) +
+  theme_minimal()
+```
+
+The classes follow the NRCS scale in micrometers per second: very low is under 0.01, low 0.01 to 0.1, moderately low 0.1 to 1, moderately high 1 to 10, high 10 to 100, and very high is 100 or more. The depth average uses a harmonic mean because water moves down through layers in series, so the tightest layer controls the flow, while components side by side are averaged by their percent. Map units with no usable `ksat_r` (for example open water or some urban land) have no row in `soil_perm` and will come out as missing after the join. Each value is an average over a map unit, so it describes the typical soil of that unit, not a single spot, and it covers only the top 100 cm, while wells often draw from deeper deposits.
+
+#### Map of soil permeability
+
+```{r}
+# The 1.2M-polygon read and rasterize is slow, so the 1 km grid is cached to an RDS file
+if (file.exists("soil_perm_raster.rds")) {
+  perm_raster_df <- readRDS("soil_perm_raster.rds")
+} else {
+  soil_vect <- terra::vect("gSSURGO_MI.gdb", layer = "MUPOLYGON",
+                           query = "SELECT MUKEY FROM MUPOLYGON")
+  soil_vect$perm_code <- soil_perm$perm_code[match(soil_vect$MUKEY, soil_perm$mukey)]
+
+  perm_grid   <- terra::rast(terra::ext(soil_vect), resolution = 1000, crs = terra::crs(soil_vect))
+  perm_raster <- terra::rasterize(soil_vect, perm_grid, field = "perm_code")
+
+  perm_raster_df <- as.data.frame(perm_raster, xy = TRUE) |>
+    as_tibble() |>
+    set_names(c("x", "y", "perm_code"))
+
+  saveRDS(perm_raster_df, "soil_perm_raster.rds")
+}
+```
+
+```{r}
+# Statewide soil permeability class on a 1 km grid
+perm_raster_df |>
+  mutate(perm_class = factor(perm_code, levels = 1:6, labels = levels(soil_perm$perm_class))) |>
+  ggplot(aes(x = x, y = y, fill = perm_class)) +
+  geom_raster() +
+  scale_fill_viridis_d(name = "Permeability", direction = -1) +
+  coord_equal() +
+  labs(title = "Soil Permeability in the Top 100 cm (gSSURGO)") +
+  theme_void()
+```
+
+#### Joining soil to the sampling locations
+
+```{r}
+# Point-in-polygon against 1.2M soil polygons is slow, so it runs once and is cached to a CSV
+if (file.exists("water_mukey.csv")) {
+  water_mukey <- read_csv("water_mukey.csv", col_types = cols(MUKEY = col_character()))
+} else {
+  mupolygon <- st_read("gSSURGO_MI.gdb", query = "SELECT MUKEY FROM MUPOLYGON", quiet = TRUE)
+
+  water_mukey <- st_transform(water_locations, st_crs(mupolygon)) |>
+    st_join(mupolygon) |>
+    st_drop_geometry() |>
+    distinct(hex_id, .keep_all = TRUE) |>   # a point on a polygon boundary can match twice
+    select(hex_id, MUKEY)
+
+  write_csv(water_mukey, "water_mukey.csv")
+}
+```
+
+```{r}
+# n_missing_soil = locations outside every soil polygon (e.g. open water, shoreline)
+water_mukey |>
+  summarise(
+    n_locations    = n(),
+    n_missing_soil = sum(is.na(MUKEY)),
+    pct_missing    = round(mean(is.na(MUKEY)) * 100, 1)
+  )
+```
+
+```{r}
+# Soil attribute tables hold one row per MUKEY, so these joins cannot duplicate locations
+water_soil <- water_mukey |>
+  left_join(
+    muaggatt |> select(mukey, drclassdcd, hydgrpdcd, wtdepannmin, brockdepmin, slopegradwta),
+    by = c("MUKEY" = "mukey")
+  ) |>
+  left_join(
+    valu1 |> select(mukey, soc0_150, aws0_150, droughty),
+    by = c("MUKEY" = "mukey")
+  ) |>
+  left_join(
+    soil_perm |> select(mukey, ksat_100cm, perm_class),
+    by = c("MUKEY" = "mukey")
+  )
+
+glimpse(water_soil)
+```
+
+```{r}
+# pct_missing per soil attribute (urban and water map units often carry no soil data)
+water_soil |>
+  summarise(across(
+    c(drclassdcd, hydgrpdcd, wtdepannmin, brockdepmin, slopegradwta,
+      soc0_150, aws0_150, droughty, ksat_100cm),
+    ~ round(mean(is.na(.x)) * 100, 1)
+  ))
+```
+
+#### Auditing the soil join
+
+**Procedure**
+
+1. Follow the locations through the join stage by stage: inside a soil polygon, then a map unit record, then a permeability value.
+2. Separate the two reasons a location can end up without permeability.
+3. Check how many locations share a map unit.
+
+**Key points**
+
+- A location is lost either because it sits outside every soil polygon (open water, shoreline) or because its map unit has no usable `ksat_r` (urban land, pits).
+- Locations that share a map unit get an identical soil value, so soil is a coarser measure than the number of locations suggests.
+
+```{r}
+# Join funnel: each stage keeps only the locations that made it through the previous one
+water_soil |>
+  summarise(
+    n_all_locations      = n(),
+    n_in_soil_polygon    = sum(!is.na(MUKEY)),
+    n_with_map_unit_data = sum(!is.na(drclassdcd) | !is.na(hydgrpdcd) | !is.na(slopegradwta)),
+    n_with_permeability  = sum(!is.na(ksat_100cm))
+  ) |>
+  pivot_longer(everything(), names_to = "stage", values_to = "n_locations") |>
+  mutate(pct_of_all = round(100 * n_locations / first(n_locations), 1))
+```
+
+```{r}
+# Why a location has no permeability: outside every soil polygon, or inside one with no usable ksat
+water_soil |>
+  mutate(permeability_status = case_when(
+    is.na(MUKEY)      ~ "Outside soil polygons",
+    is.na(ksat_100cm) ~ "In a soil polygon, no permeability value",
+    TRUE              ~ "Has permeability"
+  )) |>
+  count(permeability_status, name = "n_locations") |>
+  mutate(pct = round(100 * n_locations / sum(n_locations), 1))
+```
+
+```{r}
+# Map units behind the "no permeability value" locations (urban land, water and pits are typical)
+water_soil |>
+  filter(!is.na(MUKEY), is.na(ksat_100cm)) |>
+  left_join(mapunit |> select(mukey, muname), by = c("MUKEY" = "mukey")) |>
+  count(muname, name = "n_locations", sort = TRUE) |>
+  slice_head(n = 10)
+```
+
+```{r}
+# How many distinct map units the locations fall in, and how many locations share one
+water_soil |>
+  filter(!is.na(MUKEY)) |>
+  count(MUKEY, name = "n_locations_in_map_unit") |>
+  summarise(
+    n_distinct_map_units    = n(),
+    median_locations_per_mu = median(n_locations_in_map_unit),
+    max_locations_per_mu    = max(n_locations_in_map_unit),
+    n_map_units_shared      = sum(n_locations_in_map_unit > 1)
+  )
+```
+
+```{r}
+# Sampling locations colored by the permeability class of the soil they sit on
+water_locations |>
+  left_join(water_soil |> select(hex_id, perm_class), by = "hex_id") |>
+  ggplot() +
+  geom_sf(data = aquifer, fill = "grey95", color = "grey75") +
+  geom_sf(aes(color = perm_class), size = 1.5) +
+  scale_color_viridis_d(name = "Permeability", direction = -1, na.value = "#eb6834") +
+  labs(title = "Public-water sampling locations by soil permeability") +
+  theme_minimal()
+```
+
+#### Do the sampling locations represent the whole state's soils?
+
+```{r}
+# Share of the whole state (by area) in each permeability class, from the full 1 km grid
+state_share <- perm_raster_df |>
+  filter(!is.na(perm_code)) |>
+  count(perm_code, name = "n_cells") |>
+  mutate(
+    perm_class = factor(perm_code, levels = 1:6, labels = levels(soil_perm$perm_class)),
+    share      = n_cells / sum(n_cells),
+    source     = "Whole state (by area)"
+  )
+
+# Share of sampling locations sitting on each permeability class
+site_share <- water_soil |>
+  filter(!is.na(perm_class)) |>
+  count(perm_class, name = "n_locations") |>
+  mutate(
+    share  = n_locations / sum(n_locations),
+    source = "Water sampling locations"
+  )
+
+# Side-by-side comparison of the two shares
+bind_rows(
+  select(state_share, perm_class, share, source),
+  select(site_share,  perm_class, share, source)
+) |>
+  ggplot(aes(x = perm_class, y = share, fill = source)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("Whole state (by area)" = "#2a78d6",
+                               "Water sampling locations" = "#eb6834")) +
+  labs(
+    title = "Soil permeability: whole state vs. sampling locations",
+    x = "Permeability class", y = "Share", fill = NULL
+  ) +
+  theme_minimal()
+```
+
+This compares the whole state, using every soil polygon through the 1 km grid, with where the water systems are sampled. Similar bars mean the sampling locations cover Michigan's soils evenly. Differences are expected to some degree, because water systems cluster in towns while large forested areas have few, so a gap does not by itself mean a bias.
+
+The soil columns kept for now are permeability (`ksat_100cm` and its class), drainage class (`drclassdcd`), hydrologic group (`hydgrpdcd`), minimum annual water table depth (`wtdepannmin`), depth to bedrock (`brockdepmin`), slope (`slopegradwta`), organic carbon to 150 cm (`soc0_150`), available water storage to 150 cm (`aws0_150`) and a droughty flag (`droughty`). A missing `wtdepannmin` commonly means no water table was recorded in the soil profile, so it is not always plain missing data.
+
+### Connect public water to nearby PFAS sites (distance-based metric)
+
+```{r}
+# Convert PFAS sites to spatial points, reproject to meters to match the aquifer CRS
+pfas_sites_sf   <- pfas_sites1 |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+pfas_sites_proj <- st_transform(pfas_sites_sf, st_crs(aquifer))
+```
+
+```{r}
+# For every water location, find the single closest PFAS site and its distance in meters
+nearest_idx  <- st_nearest_feature(water_locations_proj, pfas_sites_proj)
+nearest_dist <- st_distance(water_locations_proj, pfas_sites_proj[nearest_idx, ], by_element = TRUE)
+
+water_pfas_nearest <- water_locations_proj |>
+  st_drop_geometry() |>
+  select(hex_id) |>
+  mutate(
+    distance_to_nearest_site_m = as.numeric(nearest_dist),
+    nearest_site_facility = pfas_sites_proj$facility[nearest_idx],
+    nearest_site_type     = pfas_sites_proj$type[nearest_idx]
+  )
+```
+
+```{r}
+# Count how many PFAS sites (not just the nearest one) fall within a 5km radius
+within_5km <- st_is_within_distance(water_locations_proj, pfas_sites_proj, dist = 5000)
+
+water_pfas_nearest <- water_pfas_nearest |>
+  mutate(
+    n_sites_within_5km = lengths(within_5km),
+    pfas_site_nearby    = n_sites_within_5km > 0
+  )
+```
+
+```{r}
+# Classify the PFAS sites themselves by aquifer, for a sites-level (not water-level) view
+pfas_sites_aquifer <- pfas_sites_proj |>
+  st_join(aquifer |> select(AQU_UNIT, AQU_CHAR)) |>
+  st_drop_geometry()
+```
+
+### Combine into one joined dataset
+
+```{r}
+# Attach the aquifer, soil and PFAS-proximity lookup tables onto every public_water1 row
+modeling_data <- public_water1 |>
+  left_join(water_aquifer, by = "hex_id") |>
+  left_join(water_soil, by = "hex_id") |>
+  left_join(water_pfas_nearest, by = "hex_id")
+
+glimpse(modeling_data)
+```
+
+```{r}
+write_csv(modeling_data, "modeling_data.csv")
+```
+
+Reencoding the Aquifer Characteristics
+
+```{r}
+# Inspect the raw aquifer codes and their full text descriptions before recoding
+modeling_data |>
+  distinct(AQU_UNIT, AQU_CHAR) |>
+  arrange(AQU_UNIT)
+```
+
+```{r}
+# Map each AQU_UNIT code to a short, chart-friendly ordered label
+modeling_data <- modeling_data |>
+  mutate(
+    aquifer_label = case_when(
+      AQU_UNIT == "1"               ~ "I: Thin drift over bedrock",
+      AQU_UNIT == "2"               ~ "II: Drift generally not an aquifer",
+      AQU_UNIT %in% c("3a", "3aX")  ~ "IIIA: Interbedded, unconfined near surface",
+      AQU_UNIT %in% c("3b", "3bX")  ~ "IIIB: Interbedded, variable near surface",
+      AQU_UNIT == "4"               ~ "IV: Possible aquifer, undelineated",
+      TRUE ~ NA_character_
+    ),
+    aquifer_label = factor(
+      aquifer_label,
+      levels = c(
+        "I: Thin drift over bedrock",
+        "II: Drift generally not an aquifer",
+        "IIIA: Interbedded, unconfined near surface",
+        "IIIB: Interbedded, variable near surface",
+        "IV: Possible aquifer, undelineated"
+      )
+    )
+  )
+
+# n_locations = distinct hex_id sampling locations in each aquifer label
+modeling_data |>
+  distinct(hex_id, aquifer_label) |>
+  count(aquifer_label, name = "n_locations", sort = TRUE)
+```
+
+```{r}
+# Apply the same recoding to the PFAS-sites table (separate table, same lookup logic)
+pfas_sites_aquifer <- pfas_sites_aquifer |>
+  mutate(
+    aquifer_label = case_when(
+      AQU_UNIT == "1"               ~ "I: Thin drift over bedrock",
+      AQU_UNIT == "2"               ~ "II: Drift generally not an aquifer",
+      AQU_UNIT %in% c("3a", "3aX")  ~ "IIIA: Interbedded, unconfined near surface",
+      AQU_UNIT %in% c("3b", "3bX")  ~ "IIIB: Interbedded, variable near surface",
+      AQU_UNIT == "4"               ~ "IV: Possible aquifer, undelineated",
+      TRUE ~ NA_character_
+    )
+  )
+
+# n_sites = known PFAS sites in each aquifer label
+pfas_sites_aquifer |>
+  count(aquifer_label, name = "n_sites") |>
+  arrange(aquifer_label)
+```
+
+## Exploratory Analysis of the Joined Dataset
+
+Everything in this section works at the **hex_id which is the sampling location** for location-level modeling, before the system level analysis of the exact public water drinking sites are analysed
+
+```{r}
+# Collapse modeling_data down to one row per sampling location (drop the analyte-level rows)
+location_level <- modeling_data |>
+  distinct(hex_id, system_name, system_type, system_short, Hazard_Index,
+           AQU_UNIT, aquifer_label,
+           MUKEY, drclassdcd, hydgrpdcd, wtdepannmin, brockdepmin, slopegradwta,
+           soc0_150, aws0_150, droughty, ksat_100cm, perm_class,
+           distance_to_nearest_site_m, nearest_site_type, n_sites_within_5km, pfas_site_nearby)
+
+# QA: n_rows_per_hex should be 1 for every hex_id (confirms one row per location)
+location_level |>
+  count(hex_id, name = "n_rows_per_hex") |>
+  filter(n_rows_per_hex > 1)
+
+nrow(location_level)
+```
+
+This chunk collapses modeling_data from 45,080 analyte-level rows down to 1,610 rows — one per sampling location by keeping only the columns that don't vary by analyte (Hazard_Index, aquifer, soil, distance, etc.) and dropping the duplicate rows that resulted from testing 28 different chemicals at each location.No hex_id ended up with more than one row and the final count is 1,610 rows.
+
+### Understanding the location hierarchy: hex_id -> system_name -> system_type
+
+```{r}
+# hex_id = one sampling spot; system_name = the utility it belongs to; system_type = its category
+location_level |>
+  summarise(
+    n_hex_ids       = n_distinct(hex_id),
+    n_water_systems = n_distinct(system_name),
+    n_system_types  = n_distinct(system_type)
+  )
+```
+
+There are water locations that have more than one sampling location that is why the hex-ids dont match the sytem name
+
+```{r}
+# Each hex_id should have exactly one system_name, each system_name exactly one system_type
+location_level |>
+  group_by(hex_id) |>
+  summarise(n_system_names = n_distinct(system_name), .groups = "drop") |>
+  filter(n_system_names > 1)   
+location_level |>
+  group_by(system_name) |>
+  summarise(n_system_types = n_distinct(system_type), .groups = "drop") |>
+  filter(n_system_types > 1)   
+```
+
+Confirms that every system name or water sytem has one sytem type
+
+```{r}
+# n_hex_ids = sampling locations per water system; summarised to see the typical spread
+location_level |>
+  count(system_name, name = "n_hex_ids") |>
+  summarise(
+    min_locations    = min(n_hex_ids),
+    median_locations = median(n_hex_ids),
+    max_locations    = max(n_hex_ids)
+  )
+```
+
+Most water syetms have 1 sampling location however there are some that have upto 9 locations that is why we shrink it to the highest 
+
+```{r}
+# Data-quality check: locations whose system_name is missing all fall into one pseudo-system when grouped
+location_level |>
+  summarise(
+    n_locations_missing_system = sum(is.na(system_name)),
+    pct_missing_system         = round(100 * mean(is.na(system_name)), 1)
+  )
+```
+
+These locations are grouped together as a single "system" in the system-level tables, which would make that row look like a large multi-location system. They are left as they are here so the results stay comparable; if the count above is not zero, decide whether to drop them or assign them real system names before drawing conclusions about individual systems.
+
+### Aquifer coverage
+
+```{r}
+# n_locations = all sampling locations; n_missing_aquifer = those with no aquifer_label
+location_level |>
+  summarise(
+    n_locations       = n(),
+    n_missing_aquifer = sum(is.na(aquifer_label)),
+    pct_missing       = round(mean(is.na(aquifer_label)) * 100, 1)
+  )
+```
+
+```{r}
+# n_locations = distinct sampling locations per aquifer type
+location_level |>
+  count(aquifer_label, name = "n_locations") |>
+  arrange(aquifer_label)
+```
+
+### Hazard Index by aquifer type 
+
+```{r}
+### Hazard Index by aquifer type
+
+# pct_detected = share of locations with ANY detectable PFAS (median is uninformative
+# here since 86% of all locations read exactly 0, so median = 0 for every aquifer type)
+# p90_hazard = 90th percentile, a "how bad for the worse 10%" measure median can't give
+hazard_by_aquifer <- location_level |>
+  filter(!is.na(aquifer_label)) |>
+  group_by(aquifer_label) |>
+  summarise(
+    pct_detected  = round(100 * mean(Hazard_Index > 0, na.rm = TRUE), 1),
+    mean_hazard   = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    p90_hazard    = round(quantile(Hazard_Index, 0.90, na.rm = TRUE), 3),
+    max_value     = round(max(Hazard_Index, na.rm = TRUE), 2),
+    n_locations   = n(),
+    water_systems = n_distinct(system_name),
+    .groups = "drop"
+  ) |>
+  arrange(aquifer_label)
+
+hazard_by_aquifer
+```
+
+```{r}
+# Mean Hazard Index per aquifer type, sensitive to a few extreme hotspot locations
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = mean_hazard)) +
+  geom_col(fill = "darkorange", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "Mean Hazard Index by Aquifer Type", x = NULL, y = "Mean Hazard Index") +
+  theme_minimal()
+```
+
+```{r}
+# Share of locations with any detectable PFAS -- replaces median, which is 0 everywhere
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = pct_detected)) +
+  geom_col(fill = "#2a78d6", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "Percent of Locations with Detectable PFAS by Aquifer Type", x = NULL, y = "% Locations Detected") +
+  theme_minimal()
+```
+
+```{r}
+# 90th percentile Hazard Index per aquifer type -- how bad it gets for the worse 10%
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = p90_hazard)) +
+  geom_col(fill = "#1baf7a", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "90th Percentile Hazard Index by Aquifer Type", x = NULL, y = "90th Percentile Hazard Index") +
+  theme_minimal()
+```
+
+```{r}
+# Max Hazard Index per aquifer type, the worst single location, a precautionary read
+ggplot(hazard_by_aquifer, aes(x = aquifer_label, y = max_value)) +
+  geom_col(fill = "#eb6834", width = 0.7) +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  labs(title = "Max Hazard Index by Aquifer Type", x = NULL, y = "Max Hazard Index") +
+  theme_minimal()
+```
+
+mean and pct_detected tell you how widespread contamination is within each aquifer type, while p90 and max tell you how severe it gets at the tail. Reading them together: an aquifer type with low pct_detected but a high max_value means it's mostly clean with one bad outlier; high pct_detected and high p90 together means contamination is broadly present, not just a fluke.
+
+### Hazard Index by system type 
+
+```{r}
+# system_short = short code (e.g. SCH, MUN) standing in for the long system_type description
+hazard_by_system_type <- location_level |>
+  group_by(system_short) |>
+  summarise(
+    mean_hazard   = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    median_hazard = round(median(Hazard_Index, na.rm = TRUE), 2),
+    n_locations   = n(),
+    water_systems = n_distinct(system_name),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mean_hazard))
+
+hazard_by_system_type
+```
+
+```{r}
+ggplot(hazard_by_system_type, aes(x = reorder(system_short, mean_hazard), y = mean_hazard)) +
+  geom_col(fill = "darkorange", width = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Mean Hazard Index by System Type",
+    x = NULL, y = "Mean Hazard Index"
+  ) +
+  theme_minimal()
+```
+
+### What the PFAS-site distance metrics actually measure
+
+```{r}
+# distance_to_nearest_site_m = straight-line distance to the single closest known PFAS site
+location_level |>
+  summarise(
+    min_dist_m    = round(min(distance_to_nearest_site_m, na.rm = TRUE), 0),
+    median_dist_m = round(median(distance_to_nearest_site_m, na.rm = TRUE), 0),
+    mean_dist_m   = round(mean(distance_to_nearest_site_m, na.rm = TRUE), 0),
+    max_dist_m    = round(max(distance_to_nearest_site_m, na.rm = TRUE), 0)
+  )
+```
+
+```{r}
+# n_locations = sampling locations with vs. without a known site within 5km
+location_level |>
+  count(pfas_site_nearby, name = "n_locations") |>
+  mutate(pct = round(100 * n_locations / sum(n_locations), 1))
+```
+
+```{r}
+# n_locations = sampling locations whose single nearest site is of that type
+location_level |>
+  filter(!is.na(nearest_site_type)) |>
+  count(nearest_site_type, name = "n_locations", sort = TRUE)
+```
+
+### Proximity to known PFAS sites (location grain)
+
+```{r}
+# water_systems = distinct utilities with vs. without a known site nearby
+location_level |>
+  group_by(pfas_site_nearby) |>
+  summarise(
+    mean_hazard   = mean(Hazard_Index, na.rm = TRUE),
+    median_hazard = median(Hazard_Index, na.rm = TRUE),
+    n_locations   = n(),
+    water_systems = n_distinct(system_name),
+    .groups = "drop"
+  )
+```
+
+```{r}
+ggplot(location_level, aes(x = pfas_site_nearby, y = Hazard_Index, fill = pfas_site_nearby)) +
+  geom_boxplot(width = 0.5) +
+  scale_fill_manual(values = c("TRUE" = "#eb6834", "FALSE" = "#2a78d6"), guide = "none") +
+  labs(
+    title = "Hazard Index: Locations Near vs. Not Near a Known PFAS Site",
+    x = "PFAS site within 5 km", y = "Hazard Index"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(location_level, aes(x = distance_to_nearest_site_m, y = Hazard_Index)) +
+  geom_point(color = "#2a78d6", alpha = 0.5) +
+  labs(
+    title = "Hazard Index vs. Distance to Nearest Known PFAS Site",
+    x = "Distance to nearest site (m)", y = "Hazard Index"
+  ) +
+  theme_minimal()
+```
+
+### Aquifer type x PFAS-site proximity (location grain)
+
+```{r}
+# n_locations = sampling locations in each aquifer x proximity combination
+location_level |>
+  filter(!is.na(aquifer_label)) |>
+  count(aquifer_label, pfas_site_nearby, name = "n_locations") |>
+  pivot_wider(names_from = pfas_site_nearby, values_from = n_locations, values_fill = 0)
+```
+
+```{r}
+# Same cross-tab, but water_systems = distinct utilities instead of sampling locations
+location_level |>
+  filter(!is.na(aquifer_label)) |>
+  distinct(system_name, aquifer_label, pfas_site_nearby) |>
+  count(aquifer_label, pfas_site_nearby, name = "water_systems") |>
+  pivot_wider(names_from = pfas_site_nearby, values_from = water_systems, values_fill = 0)
+```
+
+### Soil permeability and the joined dataset (location grain)
+
+**Procedure**
+
+1. Check whether missing permeability clusters in particular system types or aquifers, and whether those locations look different on hazard.
+2. Compare the Hazard Index across permeability classes, the same way it was compared across aquifer types.
+3. Check how permeability overlaps with aquifer type and distance before it goes into the models.
+
+**Key points**
+
+- Models drop systems with no permeability, so it matters whether those systems are a random slice or a distinct group.
+- Aquifer type and permeability describe related things (the geology and the soil above it), so some overlap is expected.
+- This is exploration only; the models later decide whether permeability adds anything beyond distance and aquifer.
+
+```{r}
+# pct_missing_ksat by system type: if missing soil clusters in one type, dropping those systems biases the models
+location_level |>
+  group_by(system_short) |>
+  summarise(
+    n_locations      = n(),
+    n_missing_ksat   = sum(is.na(ksat_100cm)),
+    pct_missing_ksat = round(100 * mean(is.na(ksat_100cm)), 1),
+    .groups = "drop"
+  ) |>
+  arrange(desc(pct_missing_ksat))
+```
+
+```{r}
+# pct_missing_ksat by aquifer type
+location_level |>
+  group_by(aquifer_label) |>
+  summarise(
+    n_locations      = n(),
+    n_missing_ksat   = sum(is.na(ksat_100cm)),
+    pct_missing_ksat = round(100 * mean(is.na(ksat_100cm)), 1),
+    .groups = "drop"
+  ) |>
+  arrange(aquifer_label)
+```
+
+```{r}
+# Do locations without permeability look different on hazard? Similar numbers mean dropping them is low risk
+location_level |>
+  mutate(soil_status = if_else(is.na(ksat_100cm), "No permeability value", "Has permeability value")) |>
+  group_by(soil_status) |>
+  summarise(
+    n_locations  = n(),
+    pct_detected = round(100 * mean(Hazard_Index > 0, na.rm = TRUE), 1),
+    mean_hazard  = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Hazard Index by permeability class (same measures as the aquifer table: pct_detected, mean, p90, max)
+hazard_by_perm <- location_level |>
+  filter(!is.na(perm_class)) |>
+  group_by(perm_class) |>
+  summarise(
+    pct_detected  = round(100 * mean(Hazard_Index > 0, na.rm = TRUE), 1),
+    mean_hazard   = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    p90_hazard    = round(quantile(Hazard_Index, 0.90, na.rm = TRUE), 3),
+    max_value     = round(max(Hazard_Index, na.rm = TRUE), 2),
+    n_locations   = n(),
+    water_systems = n_distinct(system_name),
+    .groups = "drop"
+  ) |>
+  arrange(perm_class)
+
+hazard_by_perm
+```
+
+```{r}
+# Share of locations with any detectable PFAS in each permeability class
+ggplot(hazard_by_perm, aes(x = perm_class, y = pct_detected)) +
+  geom_col(fill = "#2a78d6", width = 0.7) +
+  labs(title = "Percent of Locations with Detectable PFAS by Soil Permeability Class",
+       x = "Permeability class", y = "% Locations Detected") +
+  theme_minimal()
+```
+
+```{r}
+# Permeability on a log10 scale for detected vs. not detected locations
+location_level |>
+  filter(!is.na(ksat_100cm)) |>
+  mutate(detection = if_else(Hazard_Index > 0, "Detected", "Not detected")) |>
+  ggplot(aes(x = detection, y = log10(ksat_100cm), fill = detection)) +
+  geom_boxplot(width = 0.5) +
+  scale_fill_manual(values = c("Detected" = "#eb6834", "Not detected" = "#2a78d6"), guide = "none") +
+  labs(title = "Soil Permeability: Detected vs. Not Detected Locations",
+       x = NULL, y = "log10 ksat, top 100 cm (micrometers per second)") +
+  theme_minimal()
+```
+
+```{r}
+# n_locations in each aquifer x permeability class combination (overlap between the two geology measures)
+location_level |>
+  filter(!is.na(aquifer_label), !is.na(perm_class)) |>
+  count(aquifer_label, perm_class, name = "n_locations") |>
+  pivot_wider(names_from = perm_class, values_from = n_locations, values_fill = 0)
+```
+
+```{r}
+# Rank correlations: how much permeability overlaps with distance, and how it relates to Hazard Index directly
+location_level |>
+  filter(!is.na(ksat_100cm), !is.na(distance_to_nearest_site_m)) |>
+  summarise(
+    n_locations          = n(),
+    spearman_ksat_dist   = round(cor(log10(ksat_100cm), log1p(distance_to_nearest_site_m), method = "spearman"), 3),
+    spearman_ksat_hazard = round(cor(log10(ksat_100cm), Hazard_Index, method = "spearman"), 3)
+  )
+```
+
+Read the tables together: a flat detection rate across permeability classes means permeability alone does not separate contaminated from clean locations, while a rising rate toward the permeable classes would match the idea that PFAS moves down faster through coarse soil. A correlation with distance close to zero means permeability brings information that distance does not already carry.
+
+### Aquifer type and soil type vs. risk (no distance) (location grain)
+
+Distance only makes sense for the **known PFAS sites**, because it measures how far a location is from a source. Aquifer and soil are different: they describe the **ground** the water comes from, so here each aquifer type and each soil type is compared with risk directly, with no distance in the picture.
+
+**Procedure**
+
+1. Keep locations with an aquifer type and, for the soil questions, a soil value.
+2. For each aquifer type, permeability class, drainage class and hydrologic group, count locations and systems and measure the detection rate and the Hazard Index.
+3. Express each group's detection rate relative to the overall rate (a risk ratio: 1 is average, above 1 is riskier than average).
+4. Test whether the groups really differ, then cross aquifer type with permeability.
+5. Fit ground-only logistic models (no distance) to see how much aquifer and soil explain on their own.
+
+**Key points**
+
+- A risk ratio compares a group with the average location, so it shows which ground types stand out, not just which have the most samples.
+- Small groups give unstable rates, so read `n_locations` next to every percentage.
+- Aquifer and soil belong to the **exact sampling location** (`hex_id`): each is the type of the polygon that location sits in, so the location is the natural unit for comparing ground types.
+- A water system can have several `hex_id`s (1 to 9), and those can sit on different ground types, so a system can appear in more than one group. Counts of systems therefore do not add up across groups, and `n_water_systems` below counts a system once per group it appears in.
+- Locations in the same system are not independent, so a model with a system effect is shown next to the plain one, and a system-level view uses only systems that sit on a single type.
+
+```{r}
+# Locations with a known aquifer; detected = any PFAS above zero. No distance variable is used in this section
+ground_data <- location_level |>
+  filter(!is.na(aquifer_label)) |>
+  mutate(
+    detected      = Hazard_Index > 0,
+    aquifer_short = str_extract(as.character(aquifer_label), "^[^:]+"),
+    log_ksat      = log10(ksat_100cm)
+  )
+
+# Helper: risk summary for any grouping variable; risk_ratio = group detection rate / overall rate
+risk_by <- function(data, group_var) {
+  data    <- data |> filter(!is.na({{ group_var }}))
+  overall <- mean(data$detected, na.rm = TRUE)
+  data |>
+    group_by({{ group_var }}) |>
+    summarise(
+      n_locations     = n(),
+      n_water_systems = n_distinct(system_name),
+      n_detected      = sum(detected, na.rm = TRUE),
+      n_systems_detected = n_distinct(system_name[detected %in% TRUE]),
+      pct_detected    = round(100 * mean(detected, na.rm = TRUE), 1),
+      risk_ratio      = round(mean(detected, na.rm = TRUE) / overall, 2),
+      mean_hazard     = round(mean(Hazard_Index, na.rm = TRUE), 2),
+      p90_hazard      = round(quantile(Hazard_Index, 0.90, na.rm = TRUE), 3),
+      .groups = "drop"
+    )
+}
+
+# Helper: bar chart of detection rate by group with n labels and a dashed line at the overall rate
+plot_risk <- function(tbl, group_var, title, xlab) {
+  ggplot(tbl, aes(x = {{ group_var }}, y = pct_detected)) +
+    geom_col(fill = "#2a78d6", width = 0.7) +
+    geom_text(aes(label = paste0("n=", n_locations)), hjust = -0.15, size = 3) +
+    geom_hline(yintercept = 100 * sum(tbl$n_detected) / sum(tbl$n_locations), linetype = "dashed") +
+    coord_flip() +
+    scale_x_discrete(limits = rev) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(title = title, x = xlab, y = "% Locations Detected (dashed line = overall)") +
+    theme_minimal()
+}
+
+# Helper: do the groups differ? chi-square (simulated p) on detection, Kruskal-Wallis on Hazard Index
+group_test <- function(data, group_var, label) {
+  d <- data |> filter(!is.na({{ group_var }}), !is.na(detected))
+  g <- d |> pull({{ group_var }}) |> as.character()
+  set.seed(123)
+  tibble(
+    factor              = label,
+    n_groups            = n_distinct(g),
+    n_locations         = nrow(d),
+    p_detection_differs = signif(chisq.test(table(g, d$detected), simulate.p.value = TRUE, B = 5000)$p.value, 3),
+    p_hazard_differs    = signif(kruskal.test(d$Hazard_Index ~ factor(g))$p.value, 3)
+  )
+}
+```
+
+#### Matching ground type to the exact location
+
+```{r}
+# How many ground types does one system touch? One row per system, counted over its own hex_ids
+system_ground_span <- ground_data |>
+  group_by(system_name) |>
+  summarise(
+    n_hex_ids       = n(),
+    n_aquifer_types = n_distinct(aquifer_short),
+    n_perm_classes  = n_distinct(perm_class, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Of the systems with more than one location, how many straddle two or more aquifer types or permeability classes?
+system_ground_span |>
+  summarise(
+    n_systems                    = n(),
+    n_multi_location_systems     = sum(n_hex_ids > 1),
+    n_span_2plus_aquifers        = sum(n_aquifer_types > 1),
+    n_span_2plus_perm_classes    = sum(n_perm_classes > 1),
+    pct_of_multi_span_aquifers   = round(100 * sum(n_aquifer_types > 1) / sum(n_hex_ids > 1), 1),
+    pct_of_multi_span_perm       = round(100 * sum(n_perm_classes > 1) / sum(n_hex_ids > 1), 1)
+  )
+```
+
+Because ground type is a property of the exact location, a system with several `hex_id`s is not one ground type by default. The counts above show how many systems straddle types. Where that number is small, assigning one type per system (the highest-Hazard-Index location, as the system-level models do) loses little; where it is large, the location-level tables below are the more faithful view, and the system-level view further down keeps only systems that sit on a single type.
+
+```{r}
+# System grain, clean assignment: keep only systems whose locations all sit on ONE type, then use the system's worst reading
+system_risk_by <- function(data, group_var) {
+  data |>
+    filter(!is.na({{ group_var }})) |>
+    group_by(system_name) |>
+    filter(n_distinct({{ group_var }}) == 1) |>
+    summarise({{ group_var }} := first({{ group_var }}), n_hex_ids = n(),
+              max_hazard = max(Hazard_Index, na.rm = TRUE), .groups = "drop") |>
+    group_by({{ group_var }}) |>
+    summarise(
+      n_water_systems           = n(),
+      n_systems_detected        = sum(max_hazard > 0),
+      pct_systems_detected      = round(100 * mean(max_hazard > 0), 1),
+      mean_locations_per_system = round(mean(n_hex_ids), 2),
+      .groups = "drop"
+    )
+}
+
+system_risk_by(ground_data, aquifer_label) |> arrange(aquifer_label)
+system_risk_by(ground_data, perm_class)    |> arrange(perm_class)
+```
+
+Compare these system rates with the location rates in the next tables. If they tell the same story, the finding does not depend on the difference between 1,610 `hex_id`s and about 1,500 systems.
+
+#### Aquifer type
+
+```{r}
+# Risk by aquifer type (no distance)
+risk_by_aquifer <- risk_by(ground_data, aquifer_label) |> arrange(aquifer_label)
+risk_by_aquifer
+```
+
+```{r}
+plot_risk(risk_by_aquifer, aquifer_label, "Detection Rate by Aquifer Type", "Aquifer type")
+```
+
+#### Soil type
+
+Three views of soil are compared: how fast water moves through it (permeability class), how well it drains (drainage class) and its runoff group (hydrologic group, A drains fastest and D slowest).
+
+```{r}
+# Risk by soil permeability class
+risk_by_perm <- risk_by(ground_data, perm_class) |> arrange(perm_class)
+risk_by_perm
+```
+
+```{r}
+plot_risk(risk_by_perm, perm_class, "Detection Rate by Soil Permeability Class", "Permeability class")
+```
+
+```{r}
+# Risk by soil drainage class (from muaggatt)
+risk_by_drainage <- risk_by(ground_data, drclassdcd) |> arrange(desc(pct_detected))
+risk_by_drainage
+```
+
+```{r}
+plot_risk(risk_by_drainage, drclassdcd, "Detection Rate by Soil Drainage Class", "Drainage class")
+```
+
+```{r}
+# Risk by hydrologic soil group (from muaggatt)
+risk_by_hydgrp <- risk_by(ground_data, hydgrpdcd) |> arrange(hydgrpdcd)
+risk_by_hydgrp
+```
+
+```{r}
+plot_risk(risk_by_hydgrp, hydgrpdcd, "Detection Rate by Hydrologic Soil Group", "Hydrologic group")
+```
+
+#### Do the ground types really differ?
+
+```{r}
+# Small p-values mean detection (or Hazard Index) differs between the groups of that factor
+bind_rows(
+  group_test(ground_data, aquifer_label, "Aquifer type"),
+  group_test(ground_data, perm_class,    "Permeability class"),
+  group_test(ground_data, drclassdcd,    "Drainage class"),
+  group_test(ground_data, hydgrpdcd,     "Hydrologic group")
+)
+```
+
+#### Aquifer type and soil permeability together
+
+```{r}
+# Detection rate for each aquifer x permeability class (no distance); blank when fewer than 10 locations
+ground_data |>
+  filter(!is.na(perm_class)) |>
+  group_by(aquifer_short, perm_class) |>
+  summarise(n_locations = n(), pct_detected = round(100 * mean(detected, na.rm = TRUE), 1), .groups = "drop") |>
+  mutate(pct_shown = if_else(n_locations >= 10, pct_detected, NA_real_)) |>
+  ggplot(aes(x = perm_class, y = aquifer_short, fill = pct_shown)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = if_else(n_locations >= 10, paste0(pct_detected, "%\nn=", n_locations), "")), size = 3) +
+  scale_fill_viridis_c(name = "% detected", direction = -1, na.value = "grey92") +
+  labs(title = "Detection Rate by Aquifer Type and Soil Permeability",
+       x = "Permeability class", y = "Aquifer type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+```{r}
+# Ground-only logistic models (no distance): how much do aquifer and permeability explain, alone and together?
+ground_logit_data <- ground_data |>
+  filter(!is.na(ksat_100cm)) |>
+  mutate(detected_yes = as.integer(detected))
+
+g_aquifer <- glm(detected_yes ~ aquifer_short,             data = ground_logit_data, family = binomial)
+g_soil    <- glm(detected_yes ~ log_ksat,                  data = ground_logit_data, family = binomial)
+g_both    <- glm(detected_yes ~ aquifer_short + log_ksat,  data = ground_logit_data, family = binomial)
+
+# mcfadden_r2 = share of the null model's deviance explained (0.2 to 0.4 is a strong fit; near 0 means little)
+tibble(
+  model         = c("Aquifer only", "Permeability only", "Aquifer + permeability"),
+  n_locations   = nrow(ground_logit_data),
+  aic           = c(AIC(g_aquifer), AIC(g_soil), AIC(g_both)),
+  bic           = c(BIC(g_aquifer), BIC(g_soil), BIC(g_both)),
+  mcfadden_r2   = round(1 - c(g_aquifer$deviance, g_soil$deviance, g_both$deviance) / g_both$null.deviance, 3)
+) |>
+  mutate(across(c(aic, bic), \(x) round(x, 1)))
+```
+
+```{r}
+# Does each ground factor add to the other? Small p-value = yes
+anova(g_soil,    g_both, test = "Chisq")   # adding aquifer to permeability
+anova(g_aquifer, g_both, test = "Chisq")   # adding permeability to aquifer
+
+# Odds of detection; aquifer types are compared with the first type (I); log_ksat is per 10-fold more permeable soil
+tidy(g_both, exponentiate = TRUE) |> arrange(p.value)
+```
+
+```{r}
+# Same model with a random intercept per system, so locations of one system are not treated as independent
+g_both_system <- glmmTMB(detected_yes ~ aquifer_short + log_ksat + (1 | system_name),
+                         data = ground_logit_data, family = binomial)
+
+# Odds ratios with and without the system effect; similar values mean the pattern is not an artefact of multi-location systems
+left_join(
+  tidy(g_both, exponentiate = TRUE) |> select(term, odds_ratio_plain = estimate, p_plain = p.value),
+  summary(g_both_system)$coefficients$cond |>
+    as_tibble(rownames = "term") |> janitor::clean_names() |>
+    transmute(term, odds_ratio_system_effect = exp(estimate), p_system_effect = pr_z),
+  by = "term"
+) |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3)))
+```
+
+If the odds ratios barely move once each system gets its own intercept, the location-level result is not driven by systems that simply have more `hex_id`s. If they shrink or lose significance, treat the location tables as optimistic and lean on the system-level models.
+
+Read the tables together. A risk ratio well above 1 with a decent `n_locations` marks a ground type that carries more detection than average, and a small p-value in the test table says the differences between groups are more than chance. The ground-only models then show how much aquifer and soil explain without any help from distance; a McFadden R-squared near zero would mean the ground type alone says little about where PFAS turns up, and any pattern is more likely driven by where the sources are.
+
+### Connecting PFAS sites, soil permeability, aquifers and public water (location grain)
+
+Distance applies only to the **known PFAS sites** (the source). Aquifer and soil were compared with risk on their own, with no distance, in the section above; this section adds the source link and checks whether the ground changes it. The analysis follows the path PFAS would take to a drinking-water location: it starts at a **known PFAS site** (the source), moves down through the **soil** (infiltration), is carried by the **aquifer** (transport), and is measured at the **public water location** (the receptor). Each step below adds one layer to the previous one.
+
+```{mermaid}
+flowchart LR
+  S["Known PFAS sites (source)<br/>distance to nearest site<br/>sites within 5 km"] --> SO["Soil permeability (infiltration)<br/>ksat, top 100 cm"]
+  SO --> AQ["Aquifer type (transport)<br/>glacial drift class"]
+  AQ --> W["Public water location (receptor)<br/>Hazard Index per hex_id"]
+  W --> SY["Water system<br/>max Hazard Index"]
+  SY --> M["Models<br/>baseline, Tweedie, hurdle"]
+```
+
+**Procedure**
+
+1. Build one table of locations that have a distance, an aquifer and a permeability value, with distance bands and grouped permeability classes.
+2. Step 1, source to receptor: detection rate by distance band.
+3. Step 2, add the aquifer: detection rate by distance band within each aquifer type.
+4. Step 3, add the soil: detection rate by distance band within each permeability group.
+5. Step 4, all three together: aquifer and permeability combinations, split into near and far locations.
+6. Map the pieces together and test whether permeability changes how much distance matters.
+
+**Key points**
+
+- Aquifer and soil permeability are measured **at the water location**, not at the PFAS site, so they describe the ground the water is drawn from, not the ground the contamination started in.
+- Cells with fewer than 10 locations are left blank in the heatmaps, because their rates are not stable.
+- This is a location-level exploration; locations in the same system share a system, so patterns here are a guide to what the system-level models should test.
+
+```{r}
+# One row per location with all three layers present; bands and groups make the cells large enough to read
+pathway_data <- location_level |>
+  filter(!is.na(aquifer_label), !is.na(perm_class), !is.na(distance_to_nearest_site_m)) |>
+  mutate(
+    detected       = Hazard_Index > 0,
+    distance_band  = cut(distance_to_nearest_site_m, breaks = c(0, 5000, 15000, 30000, Inf),
+                         labels = c("0-5 km", "5-15 km", "15-30 km", "30+ km"), include.lowest = TRUE),
+    distance_group = factor(if_else(distance_to_nearest_site_m <= 15000, "Within 15 km", "Beyond 15 km"),
+                            levels = c("Within 15 km", "Beyond 15 km")),
+    aquifer_short  = str_extract(as.character(aquifer_label), "^[^:]+"),
+    perm_group     = fct_collapse(
+      perm_class,
+      "Low (very low to moderately low)" = c("Very low", "Low", "Moderately low"),
+      "Moderately high"                  = "Moderately high",
+      "High / very high"                 = c("High", "Very high")
+    )
+  )
+
+# Helper: share of locations with any detectable PFAS within any grouping
+detect_by <- function(data, ...) {
+  data |>
+    group_by(...) |>
+    summarise(n_locations = n(), pct_detected = round(100 * mean(detected), 1), .groups = "drop")
+}
+
+# n_locations per distance band (edit the breaks above if a band is too small)
+pathway_data |> count(distance_band, name = "n_locations")
+```
+
+#### Step 1: PFAS site distance and detection
+
+```{r}
+# Detection rate and mean Hazard Index by distance band
+by_distance <- pathway_data |>
+  group_by(distance_band) |>
+  summarise(
+    n_locations  = n(),
+    pct_detected = round(100 * mean(detected), 1),
+    mean_hazard  = round(mean(Hazard_Index), 2),
+    .groups = "drop"
+  )
+
+by_distance
+```
+
+```{r}
+ggplot(by_distance, aes(x = distance_band, y = pct_detected)) +
+  geom_col(fill = "#eb6834", width = 0.7) +
+  geom_text(aes(label = paste0("n=", n_locations)), vjust = -0.4, size = 3) +
+  labs(title = "Detection Rate by Distance to the Nearest Known PFAS Site",
+       x = "Distance to nearest site", y = "% Locations Detected") +
+  theme_minimal()
+```
+
+#### Step 2: add the aquifer
+
+```{r}
+# Detection rate for each distance band x aquifer type; blank when fewer than 10 locations
+detect_by(pathway_data, aquifer_short, distance_band) |>
+  mutate(pct_shown = if_else(n_locations >= 10, pct_detected, NA_real_)) |>
+  ggplot(aes(x = distance_band, y = aquifer_short, fill = pct_shown)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = if_else(n_locations >= 10, paste0(pct_detected, "%\nn=", n_locations), "")), size = 3) +
+  scale_fill_viridis_c(name = "% detected", direction = -1, na.value = "grey92") +
+  labs(title = "Detection Rate by Distance and Aquifer Type",
+       x = "Distance to nearest site", y = "Aquifer type") +
+  theme_minimal()
+```
+
+#### Step 3: add the soil permeability
+
+```{r}
+# Detection rate across distance bands, one line per permeability group
+detect_by(pathway_data, perm_group, distance_band) |>
+  ggplot(aes(x = distance_band, y = pct_detected, color = perm_group, group = perm_group)) +
+  geom_line(linewidth = 1) +
+  geom_point(aes(size = n_locations)) +
+  scale_color_viridis_d(name = "Permeability", direction = -1) +
+  scale_size_continuous(name = "n_locations", range = c(1, 5)) +
+  labs(title = "Detection Rate by Distance, Split by Soil Permeability",
+       x = "Distance to nearest site", y = "% Locations Detected") +
+  theme_minimal()
+```
+
+#### Step 4: aquifer, soil and distance together
+
+```{r}
+# Aquifer x permeability group, split into near and far locations; blank when fewer than 10 locations
+detect_by(pathway_data, distance_group, aquifer_short, perm_group) |>
+  mutate(pct_shown = if_else(n_locations >= 10, pct_detected, NA_real_)) |>
+  ggplot(aes(x = perm_group, y = aquifer_short, fill = pct_shown)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = if_else(n_locations >= 10, paste0(pct_detected, "%\nn=", n_locations), "")), size = 3) +
+  facet_wrap(~ distance_group) +
+  scale_fill_viridis_c(name = "% detected", direction = -1, na.value = "grey92") +
+  labs(title = "Detection Rate by Aquifer, Soil Permeability and Distance",
+       x = "Permeability group", y = "Aquifer type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+```{r}
+# Combinations with the highest detection rate (only cells with at least 15 locations)
+detect_by(pathway_data, distance_group, aquifer_short, perm_group) |>
+  filter(n_locations >= 15) |>
+  arrange(desc(pct_detected)) |>
+  slice_head(n = 10)
+```
+
+#### Putting it on the map
+
+```{r}
+# Water locations by detection status over the aquifer layer, with known PFAS sites as black triangles
+water_locations_proj |>
+  left_join(pathway_data |> select(hex_id, detected), by = "hex_id") |>
+  filter(!is.na(detected)) |>
+  ggplot() +
+  geom_sf(data = aquifer, fill = "grey95", color = "grey80") +
+  geom_sf(aes(color = detected), size = 1.2, alpha = 0.7) +
+  geom_sf(data = pfas_sites_proj, shape = 17, color = "black", size = 1.5) +
+  scale_color_manual(values = c("TRUE" = "#eb6834", "FALSE" = "#2a78d6"),
+                     labels = c("TRUE" = "PFAS detected", "FALSE" = "Not detected"), name = NULL) +
+  labs(title = "Public-water locations, detection status and known PFAS sites") +
+  theme_minimal()
+```
+
+#### Does permeability change how much distance matters?
+
+```{r}
+# Logistic regression of detection on log distance and log permeability, with and without their interaction
+interaction_data <- pathway_data |>
+  mutate(detected_yes = as.integer(detected),
+         log_distance = log1p(distance_to_nearest_site_m),
+         log_ksat     = log10(ksat_100cm))
+
+m_main <- glm(detected_yes ~ log_distance + log_ksat, data = interaction_data, family = binomial)
+m_int  <- glm(detected_yes ~ log_distance * log_ksat, data = interaction_data, family = binomial)
+
+# Likelihood-ratio test: a small p-value means the distance effect differs by permeability
+anova(m_main, m_int, test = "Chisq")
+tidy(m_int, exponentiate = TRUE)
+```
+
+Read the steps in order. If the detection rate falls with distance in Step 1, the source-to-receptor link is visible. If that fall is steeper in some aquifer types (Step 2) or in permeable soils (Step 3), those layers modify the distance effect, and Step 4 shows which combinations carry the highest rates. The interaction test then checks whether permeability changes the distance slope. Locations in the same system are not independent, so treat these p-values as a guide, and rely on the system-level models for the formal comparison.
+
+### What the exploration hands to the models
+
+The location-level work above decides what goes into the system-level models:
+
+- **Distance** applies only to the known PFAS sites; it is the source-to-receptor link tested in Step 1 and enters every model as `log(1 + distance)`.
+- **Aquifer type** was compared with risk on its own (no distance) and then against the distance link (Step 2); it enters as a whole categorical variable.
+- **Soil type** (permeability, drainage, hydrologic group) was compared with risk on its own (no distance); permeability was then tested with distance (Step 3 and the interaction test). All of these soil variables enter the models at the system's highest-Hazard-Index location, and the selection decides which ones stay.
+- **Missing soil or aquifer values** (join audit and the missingness tables) decide which systems are dropped, so every candidate model is fit on the same rows.
+
+Next the locations are rolled up to one row per water system, because the public-health question is about systems.
+
+## Water-System Level Analysis
+
+The project's real question is how badly **public water systems** This section rolls `location_level` up to
+one row per `system_name`, using `max_hazard` (the system's worst sampling point) as
+the headline number, since a public-health read should not let a few clean samples
+average away a real hotspot.
+
+### Rolling locations up to systems
+
+```{r}
+# One row per system_name: worst reading, typical reading, spread, and closest known-site distance
+system_hazard <- location_level |>
+  group_by(system_name, system_type) |>
+  summarise(
+    n_hex_ids               = n(),
+    max_hazard              = round(max(Hazard_Index, na.rm = TRUE), 2),
+    mean_hazard             = round(mean(Hazard_Index, na.rm = TRUE), 2),
+    hazard_range            = round(max_hazard - min(Hazard_Index, na.rm = TRUE), 2),
+    min_distance_to_site_m  = round(min(distance_to_nearest_site_m, na.rm = TRUE)),
+    .groups = "drop"
+  ) |>
+  arrange(desc(max_hazard))
+
+nrow(system_hazard)   # should equal n_water_systems, not n_hex_ids
+system_hazard
+```
+
+```{r}
+# Top 15 worst-affected systems by their single highest Hazard Index reading
+top_systems <- system_hazard |> slice_head(n = 15)
+
+ggplot(top_systems, aes(x = reorder(system_name, max_hazard), y = max_hazard)) +
+  geom_col(fill = "#eb6834") +
+  coord_flip() +
+  labs(
+    title = "Water Systems with the Highest Hazard Index",
+    x = NULL, y = "Max Hazard Index (worst sampling location)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# n_systems_above_alert = systems with at least one reading at/above the EPA limit
+# (Hazard_Index = 1 means combined exposure across the four PFAS chemicals equals
+# their EPA health-based reference level; above 1 means it exceeds that limit)
+HAZARD_ALERT_THRESHOLD <- 1
+
+system_hazard |>
+  summarise(
+    n_water_systems       = n(),
+    n_systems_above_alert = sum(max_hazard > HAZARD_ALERT_THRESHOLD),
+    pct_above_alert       = round(100 * mean(max_hazard > HAZARD_ALERT_THRESHOLD), 1)
+  )
+```
+
+### Does spread between a system's own locations relate to its Hazard Index variability?
+
+```{r}
+# Only systems with more than one sampling location have a "spread" to measure
+multi_location_systems <- location_level |>
+  group_by(system_name) |>
+  filter(n() > 1) |>
+  summarise(
+    n_hex_ids    = n(),
+    hazard_range = round(max(Hazard_Index) - min(Hazard_Index), 2),
+    hazard_sd    = round(sd(Hazard_Index), 2),
+    .groups = "drop"
+  )
+
+nrow(multi_location_systems)   # how many systems this check even applies to
+```
+
+```{r}
+# max_spread_m = farthest distance between any two of a system's own sampling points
+system_spread <- water_locations_proj |>
+  left_join(public_water1 |> distinct(hex_id, system_name), by = "hex_id") |>
+  semi_join(multi_location_systems, by = "system_name") |>
+  group_by(system_name) |>
+  group_modify(~ tibble(max_spread_m = as.numeric(max(st_distance(.x))))) |>
+  ungroup()
+
+multi_location_systems |>
+  left_join(system_spread, by = "system_name") |>
+  arrange(desc(hazard_range))
+```
+
+### Do systems with spread-out locations sit on different ground types?
+
+The check above showed that some systems have sampling locations several kilometres apart. Ground type belongs to each exact location, so the farther apart a system's locations are, the more likely they sit on different aquifer types or soil permeability classes.
+
+```{r}
+# Multi-location systems with their spread, hazard range and how many aquifer types / permeability classes they touch
+span_check <- multi_location_systems |>
+  left_join(system_spread, by = "system_name") |>
+  inner_join(system_ground_span |> select(system_name, n_aquifer_types, n_perm_classes), by = "system_name") |>
+  mutate(
+    straddles_aquifers = n_aquifer_types > 1,
+    straddles_perm     = n_perm_classes > 1
+  )
+
+# Systems that straddle aquifer types vs. those that do not
+span_check |>
+  group_by(straddles_aquifers) |>
+  summarise(
+    n_systems            = n(),
+    median_spread_km     = round(median(max_spread_m) / 1000, 1),
+    median_hazard_range  = round(median(hazard_range), 2),
+    mean_hazard_range    = round(mean(hazard_range), 2),
+    .groups = "drop"
+  )
+
+# Same split for permeability class
+span_check |>
+  group_by(straddles_perm) |>
+  summarise(
+    n_systems            = n(),
+    median_spread_km     = round(median(max_spread_m) / 1000, 1),
+    median_hazard_range  = round(median(hazard_range), 2),
+    mean_hazard_range    = round(mean(hazard_range), 2),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Rank correlations: spread vs. number of ground types touched, and number of aquifer types vs. hazard range
+span_check |>
+  summarise(
+    n_systems                    = n(),
+    spearman_spread_aquifers     = round(cor(max_spread_m, n_aquifer_types, method = "spearman"), 3),
+    spearman_spread_perm         = round(cor(max_spread_m, n_perm_classes,  method = "spearman"), 3),
+    spearman_aquifers_hazardrange = round(cor(n_aquifer_types, hazard_range, method = "spearman"), 3)
+  )
+```
+
+A clear positive link between spread and the number of ground types touched means the system-level ground type is a blurrier measure for wide systems. A positive link between touching more aquifer types and a larger hazard range would support the idea that the ground under a system's locations helps explain why its readings differ, and is another reason the system uses its worst location (`max_hazard`) as the outcome.
+
+## Data Preparation for Modeling
+
+### Outcome variable: log(max Hazard Index)
+
+```{r}
+# log1p handles Hazard_Index == 0 safely (log(0) is undefined, log1p(0) = 0)
+model_data <- system_hazard |>
+  filter(!is.na(min_distance_to_site_m)) |>
+  mutate(log_hazard = log1p(max_hazard))
+```
+
+```{r}
+# Compare raw vs. log-transformed distributions to check the log fixed the right-skew
+model_data |>
+  summarise(
+    mean_hazard        = round(mean(max_hazard), 2),
+    median_hazard      = round(median(max_hazard), 2),
+    mean_log_hazard    = round(mean(log_hazard), 2),
+    median_log_hazard  = round(median(log_hazard), 2)
+  )
+```
+
+```{r}
+ggplot(model_data, aes(x = log_hazard)) +
+  geom_histogram(fill = "#2a78d6", bins = 30) +
+  labs(
+    title = "Distribution of log(1 + Max Hazard Index) by Water System",
+    x = "log(1 + Max Hazard Index)", y = "Number of water systems"
+  ) +
+  theme_minimal()
+```
+
+### Explanatory variable: log(1 + distance to nearest site)
+
+```{r}
+# x = log(1 + raw distance): no cap applied, the full distance range is used as-is
+model_data <- model_data |>
+  mutate(log_distance = log1p(min_distance_to_site_m))
+```
+
+```{r}
+# Compare raw distance vs. its log to see how much the log compresses the range
+model_data |>
+  summarise(
+    min_dist_m   = round(min(min_distance_to_site_m), 0),
+    max_dist_m   = round(max(min_distance_to_site_m), 0),
+    min_log_dist = round(min(log_distance), 2),
+    max_log_dist = round(max(log_distance), 2)
+  )
+```
+
+```{r}
+ggplot(model_data, aes(x = min_distance_to_site_m, y = log_distance)) +
+  geom_point(color = "#1baf7a", alpha = 0.4) +
+  labs(
+    title = "Distance to Nearest PFAS Site vs. log(1 + Distance)",
+    x = "Distance to nearest site (m)", y = "log(1 + Distance)"
+  ) +
+  theme_minimal()
+```
+
+### Simple linear regression: log(Hazard Index) on log(distance)
+
+This is the **baseline model**: one regression line fit to every water system, with distance as the only predictor. The Tweedie and hurdle models further down are compared against it.
+
+```{r}
+# Recipe: log both the raw distance and the outcome (log-log model), no distance cap
+pfas_recipe <- recipe(max_hazard ~ min_distance_to_site_m, data = model_data) |>
+  step_log(min_distance_to_site_m, offset = 1) |>
+  step_log(max_hazard, offset = 1)
+```
+
+```{r}
+# Model spec: ordinary least squares via the "lm" engine, one predictor = "simple" regression
+lm_spec <- linear_reg() |> set_engine("lm")
+```
+
+```{r}
+# Workflow bundles the recipe (preprocessing) and the model spec together
+pfas_workflow <- workflow() |>
+  add_recipe(pfas_recipe) |>
+  add_model(lm_spec)
+
+pfas_fit <- fit(pfas_workflow, data = model_data)
+```
+
+```{r}
+# per 1% change in (1 + distance)
+tidy(pfas_fit)
+```
+
+The log_hazard when log_distance = 0 is 0.369.
+So exponential of (0.369) - 1 is about 0.45 thus the baseline prediction for a system at distance zero is a Hazard Index around 0.45 even at zero distance, which means distance alone isn't enough to push the typical prediction over the line.
+
+The log distance estimate shows that being further away from a known site is connected to having a lower Hazard Index. There is 0.035% change in (1 + Hazard Index) per 1% increase in (1 + distance)
+
+All these are significat to the model according to the p-values
+
+```{r}
+# glance() = one-row model fit summary (R-squared, adjusted R-squared, AIC, BIC, etc.)
+glance(pfas_fit)
+```
+
+The model only explains about 1.8% which then means that distance alone cannot be used as a measure of the influence of hazard index however this r squared value is significant according to the p-value which is significantly very low
+
+```{r}
+ggplot(model_data, aes(x = log_distance, y = log_hazard)) +
+  geom_point(color = "#2a78d6", alpha = 0.4) +
+  geom_smooth(method = "lm", color = "#eb6834", se = TRUE) +
+  labs(
+    title = "log(Max Hazard Index) vs. log(1 + Distance to Nearest PFAS Site)",
+    x = "log(1 + Distance to nearest site)", y = "log(1 + Max Hazard Index)"
+  ) +
+  theme_minimal()
+```
+
+## Candidate Predictors and Automatic Selection (AIC/BIC)
+
+The Tweedie and hurdle models below use the same system-level table and the same automatic selection routine, so both are set up once here.
+
+**Procedure**
+
+1. Roll sampling locations up to one row per water system with every candidate predictor.
+2. Keep systems with an aquifer match and add the transformed versions the models use.
+3. Define one backward-elimination routine that works for any model and scores it by AIC or BIC.
+
+**Key points**
+
+- Every model starts from the same candidate variables (distance, nearby sites, aquifer, system type and all the soil variables), so results can be compared fairly.
+- `n_hex_ids` is a control and is never dropped.
+- `log_ksat` is soil permeability on a log10 scale at the system's highest-Hazard-Index sampling location; for logistic and Tweedie parts an effect is per 10-fold increase in permeability.
+- Categorical variables (`aquifer_label`, `system_group`, `drainage_class`, `hydro_group`, `droughty_flag`) are kept or dropped as a whole, not category by category.
+- The AIC/BIC choice is automatic: BIC is used when there are fewer than 20 detected systems per candidate variable, otherwise AIC (see `SELECTION_MODE` below).
+
+### Candidate predictors at the system level
+
+```{r}
+# DISTANCE_BASIS decides which location supplies a system's distance to the known PFAS sites (pfas_sites1) and its
+# count of sites within 5 km: "highest_hi_location" (the same spot as the aquifer and soil) or "nearest_any_location" (closest of its locations)
+DISTANCE_BASIS <- "highest_hi_location"
+
+# The system's representative sampling location = the one with the highest Hazard Index (ties: closest to a known PFAS site).
+# Its own aquifer type and soil permeability become the system's ground type, matching how max_hazard is picked
+index_location <- location_level |>
+  group_by(system_name) |>
+  arrange(desc(Hazard_Index), distance_to_nearest_site_m, hex_id, .by_group = TRUE) |>
+  slice(1) |>
+  ungroup() |>
+  transmute(
+    system_name,
+    index_hex_id  = hex_id,
+    aquifer_label = aquifer_label,
+    log_ksat      = log10(ksat_100cm),   # soil permeability at that location, log10 scale
+    index_distance_to_site_m = distance_to_nearest_site_m,
+    index_sites_within_5km   = n_sites_within_5km,
+    drclassdcd, hydgrpdcd, wtdepannmin, brockdepmin, slopegradwta, soc0_150, aws0_150, droughty   # the soil columns at that same location
+  )
+
+# One row per system with every candidate predictor
+system_features <- location_level |>
+  group_by(system_name, system_short) |>
+  summarise(
+    n_hex_ids              = n(),
+    max_hazard             = max(Hazard_Index, na.rm = TRUE),  # unrounded so tiny readings still count as detected
+    min_distance_to_site_m = min(distance_to_nearest_site_m, na.rm = TRUE),
+    max_sites_within_5km   = max(n_sites_within_5km, na.rm = TRUE),
+    nearest_any_distance_m = min_distance_to_site_m,   # kept for the comparison below
+    .groups = "drop"
+  ) |>
+  left_join(index_location, by = "system_name") |>
+  mutate(
+    min_distance_to_site_m = if (DISTANCE_BASIS == "highest_hi_location") index_distance_to_site_m else min_distance_to_site_m,
+    max_sites_within_5km   = if (DISTANCE_BASIS == "highest_hi_location") index_sites_within_5km   else max_sites_within_5km
+  )
+```
+
+A system with several sampling locations is represented by the location with its highest Hazard Index, the same location that sets `max_hazard`. That location's own aquifer type, soil permeability, distance to the nearest known PFAS site (from `pfas_sites1`) and count of sites within 5 km are used for the system, so the outcome, the source link and the ground type all describe the same spot. Set `DISTANCE_BASIS <- "nearest_any_location"` to take distance and site count from the closest of the system's locations instead. The two checks below show how often this choice matters.
+
+```{r}
+# Which location represents each multi-location system? tied_at_zero systems have no detection, so the tie is broken by closeness to a known site
+location_level |>
+  group_by(system_name) |>
+  filter(n() > 1) |>
+  summarise(peak_hazard = max(Hazard_Index, na.rm = TRUE),
+            n_at_peak   = sum(Hazard_Index == peak_hazard, na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    n_multi_location_systems = n(),
+    n_tied_at_zero           = sum(peak_hazard == 0),
+    n_positive_peak          = sum(peak_hazard > 0),
+    n_positive_peak_tied     = sum(peak_hazard > 0 & n_at_peak > 1)
+  )
+```
+
+```{r}
+# For multi-location systems with a positive peak: does the highest-HI location sit on a different aquifer type or permeability class than the system's other locations?
+location_level |>
+  group_by(system_name) |>
+  filter(n() > 1, max(Hazard_Index, na.rm = TRUE) > 0) |>
+  summarise(
+    n_aquifers_other_locations = n_distinct(aquifer_label[Hazard_Index < max(Hazard_Index, na.rm = TRUE)], na.rm = TRUE),
+    peak_aquifer               = first(aquifer_label[which.max(Hazard_Index)]),
+    other_aquifers_differ      = any(aquifer_label[Hazard_Index < max(Hazard_Index, na.rm = TRUE)] != peak_aquifer, na.rm = TRUE),
+    peak_perm                  = first(perm_class[which.max(Hazard_Index)]),
+    other_perm_differ          = any(perm_class[Hazard_Index < max(Hazard_Index, na.rm = TRUE)] != peak_perm, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  summarise(
+    n_systems                  = n(),
+    n_other_locations_differ_aquifer = sum(other_aquifers_differ),
+    n_other_locations_differ_perm    = sum(other_perm_differ)
+  )
+```
+
+```{r}
+# Does the distance basis matter? For multi-location systems, compare the highest-HI location's distance with the closest location's
+system_features |>
+  filter(n_hex_ids > 1) |>
+  summarise(
+    n_multi_location_systems = n(),
+    n_distance_differs       = sum(abs(index_distance_to_site_m - nearest_any_distance_m) > 1),
+    median_difference_km     = round(median(abs(index_distance_to_site_m - nearest_any_distance_m)) / 1000, 2),
+    max_difference_km        = round(max(abs(index_distance_to_site_m - nearest_any_distance_m)) / 1000, 1)
+  )
+```
+
+```{r}
+# How much permeability varies inside one system: shows why it matters which location represents the system
+location_level |>
+  filter(!is.na(ksat_100cm)) |>
+  group_by(system_name) |>
+  filter(n() > 1) |>
+  summarise(ksat_range_log10 = diff(range(log10(ksat_100cm))), .groups = "drop") |>
+  summarise(
+    n_multi_location_systems = n(),
+    median_range_log10       = round(median(ksat_range_log10), 2),
+    max_range_log10          = round(max(ksat_range_log10), 2),
+    n_systems_over_10fold    = sum(ksat_range_log10 > 1)
+  )
+```
+
+```{r}
+# Row accounting: systems lost to a missing aquifer and/or missing permeability before the models
+system_features |>
+  summarise(
+    n_systems             = n(),
+    n_no_aquifer          = sum(is.na(aquifer_label)),
+    n_no_permeability     = sum(is.na(log_ksat)),
+    n_complete_for_models = sum(!is.na(aquifer_label) & !is.na(log_ksat))
+  )
+```
+
+```{r}
+# detected = hurdle outcome ("yes" is the SECOND level so coefficients describe the odds of detection)
+# Numeric soil: missing filled with the median, then standardised so a coefficient is per 1 standard deviation
+fill_z <- function(x) as.numeric(scale(if_else(is.na(x), median(x, na.rm = TRUE), x)))
+
+hurdle_data <- system_features |>
+  filter(!is.na(aquifer_label), !is.na(log_ksat)) |>
+  mutate(
+    detected   = factor(if_else(max_hazard > 0, "yes", "no"), levels = c("no", "yes")),
+    log_hazard = log1p(max_hazard),
+    # categorical soil: missing becomes "Unknown", classes under 5% of systems are lumped into OTHER
+    drainage_class      = fct_lump_prop(factor(coalesce(as.character(drclassdcd), "Unknown")), prop = 0.05, other_level = "OTHER"),
+    hydro_group         = fct_lump_prop(factor(coalesce(as.character(hydgrpdcd),  "Unknown")), prop = 0.05, other_level = "OTHER"),
+    droughty_flag       = fct_lump_prop(factor(coalesce(as.character(droughty),   "Unknown")), prop = 0.05, other_level = "OTHER"),
+    # a missing water table or bedrock depth usually means none was recorded, so it gets its own 0/1 indicator
+    water_table_missing = as.integer(is.na(wtdepannmin)),
+    bedrock_missing     = as.integer(is.na(brockdepmin)),
+    water_table_depth   = fill_z(wtdepannmin),
+    bedrock_depth       = fill_z(brockdepmin),
+    slope               = fill_z(slopegradwta),
+    organic_carbon      = fill_z(soc0_150),
+    water_storage       = fill_z(aws0_150)
+  )
+
+# n_water_systems = rows kept; n_detected = systems that cleared the hurdle
+hurdle_data |>
+  summarise(
+    n_water_systems = n(),
+    n_detected      = sum(detected == "yes"),
+    pct_detected    = round(100 * mean(detected == "yes"), 1)
+  )
+```
+
+```{r}
+# Audit of the prepared soil terms on the model rows: how many systems were filled in, and how many classes each categorical has
+hurdle_data |>
+  summarise(
+    n_systems                 = n(),
+    pct_water_table_missing   = round(100 * mean(water_table_missing), 1),
+    pct_bedrock_missing       = round(100 * mean(bedrock_missing), 1),
+    pct_slope_missing         = round(100 * mean(is.na(slopegradwta)), 1),
+    pct_organic_carbon_missing = round(100 * mean(is.na(soc0_150)), 1),
+    pct_water_storage_missing = round(100 * mean(is.na(aws0_150)), 1),
+    n_drainage_classes        = n_distinct(drainage_class),
+    n_hydro_groups            = n_distinct(hydro_group),
+    n_droughty_classes        = n_distinct(droughty_flag)
+  )
+```
+
+The candidate predictors are:
+
+- **log(1 + distance to the nearest site):** the original question; distance from the system's highest-Hazard-Index location to the closest site in `pfas_sites1`. The baseline model above still uses the closest of a system's locations.
+- **max_sites_within_5km:** how many known sites are nearby, not just the closest one. It overlaps with distance, so watch for unstable standard errors if both look odd.
+- **n_hex_ids:** the number of sampling locations in the system (explained below).
+- **aquifer_label:** the aquifer type under the system's highest-Hazard-Index sampling location.
+- **log_ksat:** soil permeability (log10 ksat, top 100 cm) at the system's highest-Hazard-Index location; one unit means soil 10 times more permeable.
+- **drainage_class, hydro_group, droughty_flag:** soil drainage class, hydrologic group and droughty flag at that location (missing becomes "Unknown", classes under 5% of systems are lumped into OTHER).
+- **water_table_depth, bedrock_depth:** minimum annual water table depth and depth to bedrock, each with a `_missing` indicator because a missing value usually means none was recorded.
+- **slope, organic_carbon, water_storage:** slope, organic carbon to 150 cm and available water storage to 150 cm.
+- The numeric soil terms are filled with the median where missing and standardised, so their coefficients are per one standard deviation, not per original unit.
+- **system_short:** the system type, with rare types lumped into "other".
+
+Systems with no aquifer match (shoreline locations) or no soil permeability (open water, urban land) are dropped here, so these models use fewer systems than the baseline. A system's aquifer and permeability come from its highest-Hazard-Index sampling location, so a system whose peak location has no aquifer or soil value is dropped even if another of its locations has one. All candidate models must use the same rows for AIC/BIC to be valid, which is why the filter is applied once, here. Every soil variable is offered to the selection, which drops the ones that do not help. Systems are still required to have an aquifer and a permeability value; the other soil columns are filled in rather than dropping systems, so every model keeps the same rows.
+
+### Why n_hex_ids is in the models
+
+`n_hex_ids` is a **control variable**, not something we think causes contamination. `max_hazard` is the worst reading across a system's sampling locations, and systems range from 1 to 9 locations. Even if every location carried the same underlying risk, a system with 9 locations has 9 chances to catch a high reading, so its max tends to be higher, and it has more chances to detect something at all. Including `n_hex_ids` lets the other coefficients (distance, aquifer, system type) be estimated holding the number of sampling locations fixed.
+
+Its own coefficient should not be read as "more sampling causes more PFAS." It only shows the sampling-chances effect is real. It can also overlap with system type, since large municipal systems tend to have more locations.
+
+### Selection data and the AIC/BIC routine
+
+```{r}
+# Modeling table for the extended models: log distance, 0/1 detection flag, rare system types lumped into OTHER
+selection_data <- hurdle_data |>
+  mutate(
+    detected_yes = as.integer(max_hazard > 0),
+    log_distance = log1p(min_distance_to_site_m),
+    system_group = fct_lump_prop(system_short, prop = 0.05, other_level = "OTHER")
+  )
+
+# Severity uses detected systems only
+severity_selection_data <- selection_data |> filter(max_hazard > 0)
+```
+
+```{r}
+# SELECTION_MODE: "auto" picks the criterion from the data (see below); set "BIC" or "AIC" to force one
+SELECTION_MODE <- "auto"
+sel_criteria   <- c(AIC = "AIC", BIC = "BIC")
+
+# Every soil variable offered to the selection (prepared in hurdle_data)
+soil_terms <- c("log_ksat", "drainage_class", "hydro_group", "droughty_flag",
+                "water_table_depth", "water_table_missing", "bedrock_depth", "bedrock_missing",
+                "slope", "organic_carbon", "water_storage")
+
+# All candidate variables; n_hex_ids is always kept as a control
+candidate_terms <- c("log_distance", "max_sites_within_5km", "n_hex_ids", "aquifer_label", "system_group", soil_terms)
+
+# The same candidates in the hurdle recipes (raw distance and system type are transformed inside the recipe)
+hurdle_terms <- c("min_distance_to_site_m", "max_sites_within_5km", "n_hex_ids", "aquifer_label", "system_short", soil_terms)
+
+# Automatic choice: with fewer than 20 detected systems per candidate variable there are too few events for AIC to be safe, so BIC is used
+n_detected_systems   <- sum(selection_data$detected_yes)
+events_per_candidate <- n_detected_systems / length(candidate_terms)
+SELECTION_CRITERION  <- case_when(
+  SELECTION_MODE != "auto"    ~ SELECTION_MODE,
+  events_per_candidate < 20   ~ "BIC",
+  TRUE                        ~ "AIC"
+)
+
+tibble(n_candidate_terms = length(candidate_terms), n_detected_systems, events_per_candidate = round(events_per_candidate, 1),
+       selection_mode = SELECTION_MODE, criterion_used = SELECTION_CRITERION)
+```
+
+```{r}
+# Builds a formula from a vector of term names (response = NULL gives a one-sided formula)
+make_formula <- function(response, terms) {
+  reformulate(if (length(terms) == 0) "1" else terms, response = response)
+}
+
+# Backward elimination: drop the one term that lowers AIC/BIC the most, repeat until no drop helps
+backward_select <- function(fit_fun, terms, keep = character(), criterion = c("AIC", "BIC")) {
+  criterion <- match.arg(criterion)
+
+  # Score one candidate set of terms; a failed or non-converged fit counts as infinitely bad
+  score <- function(tt) {
+    fit <- tryCatch(suppressWarnings(fit_fun(tt)), error = function(e) NULL)
+    if (is.null(fit)) return(Inf)
+    if (inherits(fit, "glmmTMB") && !isTRUE(fit$sdr$pdHess)) return(Inf)
+    s <- if (criterion == "AIC") AIC(fit) else BIC(fit)
+    if (is.na(s)) Inf else s
+  }
+
+  current       <- terms
+  current_score <- score(current)
+  path <- tibble(step = 0L, dropped = "(full model)", criterion_value = current_score)
+
+  repeat {
+    droppable <- setdiff(current, keep)
+    if (length(droppable) == 0) break
+    trial <- map_dbl(droppable, \(d) score(setdiff(current, d)))
+    if (min(trial) >= current_score) break
+    worst         <- droppable[which.min(trial)]
+    current       <- setdiff(current, worst)
+    current_score <- min(trial)
+    path <- bind_rows(path, tibble(step = nrow(path), dropped = worst, criterion_value = current_score))
+  }
+
+  list(terms = current, fit = fit_fun(current), path = path, criterion = criterion, converged = is.finite(current_score))
+}
+
+# Runs the elimination under both criteria so AIC and BIC can be compared side by side
+select_both <- function(fit_fun) {
+  map(sel_criteria, \(crit) backward_select(fit_fun, candidate_terms, keep = "n_hex_ids", criterion = crit))
+}
+
+# One-row-per-criterion summary of which variables survived
+selection_summary <- function(sel) {
+  imap_dfr(sel, \(s, crit) tibble(
+    criterion       = crit,
+    terms_kept      = paste(s$terms, collapse = ", "),
+    n_terms_kept    = length(s$terms),
+    criterion_value = round(tail(s$path$criterion_value, 1), 1),
+    converged       = s$converged
+  ))
+}
+```
+
+```{r}
+# System level: how much does the ground explain without distance? Detection model with distance only, ground only, and both
+detect_sets <- list(
+  "Distance only"             = c("log_distance"),
+  "Ground only (no distance)" = c("aquifer_label", soil_terms),
+  "Distance + ground"         = c("log_distance", "aquifer_label", soil_terms)
+)
+
+# Same rows for all three, so AIC/BIC are comparable; mcfadden_r2 near 0 means little explained
+imap_dfr(detect_sets, \(tt, nm) {
+  fit <- glm(make_formula("detected_yes", tt), data = selection_data, family = binomial)
+  tibble(model = nm, n_systems = nobs(fit), aic = round(AIC(fit), 1), bic = round(BIC(fit), 1),
+         mcfadden_r2 = round(1 - fit$deviance / fit$null.deviance, 3))
+})
+```
+
+The ground-only row answers "do aquifer and soil explain detection without distance?"; the distance-only row is the source link alone; the third row shows what is gained by having both. The selection below still keeps distance as a candidate, so the ground variables are judged while holding the source link fixed.
+
+```{r}
+# Sensitivity: refit the ground-only detection model on systems whose locations all sit on ONE aquifer type
+single_aquifer_names <- system_ground_span |> filter(n_aquifer_types == 1) |> pull(system_name)
+ground_terms         <- c("aquifer_label", "log_ksat")   # kept small: single-aquifer systems are too few for every soil term
+
+fit_ground_all    <- glm(make_formula("detected_yes", ground_terms), data = selection_data, family = binomial)
+fit_ground_single <- glm(make_formula("detected_yes", ground_terms),
+                         data = filter(selection_data, system_name %in% single_aquifer_names), family = binomial)
+
+# n_systems used by each fit, then odds ratios side by side; similar values mean straddling systems are not driving the result
+tibble(fit = c("All systems", "Single-aquifer systems only"),
+       n_systems = c(nobs(fit_ground_all), nobs(fit_ground_single)))
+
+left_join(
+  tidy(fit_ground_all,    exponentiate = TRUE) |> select(term, odds_ratio_all = estimate, p_all = p.value),
+  tidy(fit_ground_single, exponentiate = TRUE) |> select(term, odds_ratio_single_aquifer = estimate, p_single_aquifer = p.value),
+  by = "term"
+) |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3)))
+```
+
+A system's ground type is taken from its highest-Hazard-Index location, the same location that sets `max_hazard`. That ties the predictor to the outcome's own spot, but it also means the location was chosen by the outcome, which can overstate the link between ground type and risk. The check above, which keeps only systems that sit on a single aquifer type (where the choice of location cannot matter), is the safeguard: similar odds ratios mean the result does not depend on the choice.
+
+**How the selection works**
+
+- **AIC** adds a penalty of 2 per estimated parameter; **BIC** adds log(n), which is about 7 per parameter for a table of this size. BIC therefore drops weaker variables and gives the smaller model, while AIC favors predictive fit and keeps borderline variables.
+- Each step removes the single variable whose removal improves the criterion the most, and stops when no removal helps. `SELECTION_CRITERION` chooses which result is used downstream. It is set automatically by `SELECTION_MODE <- "auto"`; set the mode to `"AIC"` or `"BIC"` to force one and everything below reruns on that result.
+- **With about 213 detected systems and many candidate variables, the automatic rule picks BIC**, and AIC is the sensitivity check. A variable kept by both is a strong finding; a variable kept only by AIC is suggestive, not confirmed.
+- The `converged` column in the selection summaries must be TRUE. FALSE means no fit in that search converged, so do not use that result (for the Tweedie, try `TWEEDIE_ZI <- FALSE`).
+- Only 213 systems have a detection, so the smaller BIC model is the safer read for the severity and zero-inflation parts. After selection the p-values look somewhat better than they truly are, because the model was chosen to fit this data, and nearby systems share PFAS sites, so the rows are not fully independent. Read them as a guide, not as proof.
+
+## Zero-Inflated Tweedie Model
+
+About 86% of sampling locations read exactly zero and the rest are positive, right-skewed values. A **Tweedie** model is built for that shape: one model for a continuous outcome with a pile of exact zeros, fit on the raw `max_hazard`, so no `log1p` is needed. Adding **zero inflation** gives the zeros their own process, so a system can read zero because nothing was detected there (a structural zero) or because the Tweedie part happened to produce a zero.
+
+**Procedure**
+
+1. Fit the full zero-inflated Tweedie model on `max_hazard`, with the same candidate variables in the mean part and in the zero-inflation part.
+2. Run backward elimination by AIC and by BIC; a variable is dropped from both parts together.
+3. Refit the chosen variables, read both parts of the output, and compare against a plain Tweedie without zero inflation.
+
+**Key points**
+
+- **Mean part (log link):** the exponentiated estimate is the multiplicative change in the expected Hazard Index; for distance it should be below 1.
+- **Zero-inflation part (logit link):** the exponentiated estimate is the odds of a structural zero; for distance it should be above 1, because farther systems have more zeros.
+- A plain Tweedie can already produce zeros, so the zero-inflation part is weakly identified. Keep it only if AIC/BIC prefer it over the plain version.
+- A fit that fails to converge is treated as infinitely bad during selection, so it can never be chosen.
+
+```{r}
+# TWEEDIE_ZI = TRUE puts the same terms in a zero-inflation part; set FALSE for a plain Tweedie if the full model will not converge
+TWEEDIE_ZI <- TRUE
+
+# Tweedie on raw max_hazard (log link); the same terms go into the mean and zero-inflation parts
+fit_tweedie <- function(terms, zi = TWEEDIE_ZI) {
+  glmmTMB(
+    make_formula("max_hazard", terms),
+    ziformula = if (zi) make_formula(NULL, terms) else ~ 0,
+    family    = glmmTMB::tweedie(link = "log"),
+    data      = selection_data
+  )
+}
+
+# Backward elimination under both AIC and BIC, then which variables survived
+tweedie_sel <- select_both(fit_tweedie)
+selection_summary(tweedie_sel)
+```
+
+```{r}
+# Chosen model under SELECTION_CRITERION, and the order in which variables were dropped
+tweedie_pick <- tweedie_sel[[SELECTION_CRITERION]]
+tweedie_pick$path
+```
+
+```{r}
+# Mean part (cond) and zero-inflation part (zi); effect = exp(estimate): a ratio in cond, an odds ratio in zi
+coef_table <- function(fit) {
+  summary(fit)$coefficients[c("cond", "zi")] |>
+    keep(\(m) !is.null(m) && nrow(m) > 0) |>
+    imap_dfr(\(m, part) as_tibble(m, rownames = "term") |> mutate(part = part)) |>
+    janitor::clean_names() |>
+    mutate(effect = exp(estimate)) |>
+    select(part, term, estimate, effect, std_error, p_value = pr_z) |>
+    arrange(part, p_value)
+}
+
+coef_table(tweedie_pick$fit)
+```
+
+```{r}
+# Zero-inflated vs. plain Tweedie on the same terms: power p (1 = Poisson-like, 2 = gamma-like), AIC and BIC
+plain_tweedie <- fit_tweedie(tweedie_pick$terms, zi = FALSE)
+tweedie_fits  <- list(tweedie_pick$fit, plain_tweedie)
+
+tibble(
+  model         = c("Zero-inflated Tweedie", "Plain Tweedie"),
+  n_systems     = nrow(selection_data),
+  tweedie_power = map_dbl(tweedie_fits, \(f) tryCatch(as.numeric(glmmTMB::family_params(f)), error = \(e) NA_real_)),
+  aic           = map_dbl(tweedie_fits, AIC),
+  bic           = map_dbl(tweedie_fits, BIC)
+)
+```
+
+The lower AIC/BIC of the two rows is the preferred version. If the zero-inflated model is not clearly lower, the zero-inflation part is not adding anything and the plain Tweedie is the simpler description. If a fit prints a convergence warning, trust the selection table above, since it only accepts fits whose Hessian is well behaved.
+
+## Hurdle Model: Detection and Severity
+
+About 86% of sampling locations read exactly zero, so the baseline line above has to explain two different things at once: why most systems sit at zero, and how bad the contamination is in the ones that do not. That is a big reason its R-squared is so low.
+
+A **hurdle model** splits this into two models:
+
+1. **Part 1, detection:** a logistic regression for whether a system detects any PFAS at all (`max_hazard > 0`). It uses every system.
+2. **Part 2, severity:** a linear regression of `log(1 + max_hazard)`, fit only on systems that did detect PFAS, so the zeros no longer flatten the line.
+
+Each part can have its own significant variables, so we can see what drives detection separately from what drives severity. Poisson-type zero-inflated models are for count outcomes, so they do not fit a continuous Hazard Index; the hurdle model is the continuous-data equivalent.
+
+### Part 1: which variables predict detection (logistic regression)
+
+```{r}
+# Log the distance, lump rare system types into "other", dummy-code the categoricals
+detect_recipe <- recipe(
+  make_formula("detected", hurdle_terms),
+  data = hurdle_data
+) |>
+  step_log(min_distance_to_site_m, offset = 1) |>
+  step_other(system_short, threshold = 0.05) |>
+  step_dummy(all_nominal_predictors())
+```
+
+```{r}
+# Logistic regression via the "glm" engine; coefficients describe the odds of "yes" (detected)
+detect_fit <- workflow() |>
+  add_recipe(detect_recipe) |>
+  add_model(logistic_reg() |> set_engine("glm")) |>
+  fit(data = hurdle_data)
+```
+
+```{r}
+# exponentiate = TRUE turns estimates into odds ratios (>1 raises the odds of detecting PFAS)
+tidy(detect_fit, exponentiate = TRUE) |> arrange(p.value)
+```
+
+Odds ratios above 1 mean the variable raises the odds that a system detects PFAS; below 1 lowers them. As a sanity check, the distance odds ratio should be below 1 (farther from a site means lower odds of detection); if it comes out above 1, the factor levels of `detected` are the wrong way round. For `log_ksat` the odds ratio is for soil that is 10 times more permeable; above 1 would mean more permeable soil raises the odds of detection. The standardised soil terms are per one standard deviation. Categorical variables appear as one row per category compared with a reference category, so the AIC/BIC variable selection further down (it keeps or drops each categorical as a whole) is the better way to judge whether `aquifer_label` or `system_short` matter overall.
+
+### Part 2: which variables predict severity among detected systems (linear regression)
+
+```{r}
+# Same predictors, fit only on systems with max_hazard > 0
+severity_data <- hurdle_data |> filter(max_hazard > 0)
+
+severity_recipe <- recipe(
+  make_formula("log_hazard", hurdle_terms),
+  data = severity_data
+) |>
+  step_log(min_distance_to_site_m, offset = 1) |>
+  step_other(system_short, threshold = 0.05) |>
+  step_dummy(all_nominal_predictors())
+```
+
+```{r}
+severity_fit <- workflow() |>
+  add_recipe(severity_recipe) |>
+  add_model(linear_reg() |> set_engine("lm")) |>
+  fit(data = severity_data)
+```
+
+```{r}
+tidy(severity_fit) |> arrange(p.value)
+```
+
+```{r}
+# One-row fit summary for the severity model
+glance(severity_fit)
+```
+
+Part 2 uses far fewer rows than Part 1, because only systems with detections are included. Expect fewer significant variables here, and do not read that as "nothing matters."
+
+## Automatic Variable Selection (Hurdle Model)
+
+The same AIC/BIC routine defined above is applied to each hurdle part. **Hurdle** describes the two-model structure; **AIC/BIC backward selection** (and, as a cross-check, LASSO) decides which variables each part keeps.
+
+**Procedure**
+
+1. Fit the full plain `glm()` (detection) and `lm()` (severity) with every candidate variable.
+2. Run backward elimination by AIC and by BIC and compare which variables survive.
+3. Take the result for `SELECTION_CRITERION`, read its odds ratios or estimates, and refit it in tidymodels so `predict()` works.
+
+**Key points**
+
+- Plain `glm()`/`lm()` are used here, instead of recipes, so a categorical variable is kept or dropped as a whole rather than as separate dummy columns.
+- Detection and severity can keep different variables; distance may matter for whether PFAS shows up but not for how high it gets.
+- Severity uses only the detected systems, so it has far fewer rows and usually keeps fewer variables.
+
+### Part 1: detection
+
+```{r}
+# Backward elimination for detection (logistic regression on all systems) under AIC and BIC
+detect_sel <- select_both(\(tt) glm(make_formula("detected_yes", tt), data = selection_data, family = binomial))
+selection_summary(detect_sel)
+```
+
+```{r}
+# Chosen detection model and the order in which variables were dropped
+detect_pick <- detect_sel[[SELECTION_CRITERION]]
+detect_pick$path
+```
+
+```{r}
+# Odds ratios for the surviving variables (>1 raises the odds of detecting PFAS), then fit summary with AIC and BIC
+tidy(detect_pick$fit, exponentiate = TRUE) |> arrange(p.value)
+glance(detect_pick$fit)
+```
+
+### Part 2: severity
+
+```{r}
+# Backward elimination for severity (linear regression on detected systems only) under AIC and BIC
+severity_sel <- select_both(\(tt) lm(make_formula("log_hazard", tt), data = severity_selection_data))
+selection_summary(severity_sel)
+```
+
+```{r}
+# Chosen severity model and the order in which variables were dropped
+severity_pick <- severity_sel[[SELECTION_CRITERION]]
+severity_pick$path
+```
+
+```{r}
+# Estimates on the log(1 + max_hazard) scale, then fit summary with R-squared, AIC and BIC
+tidy(severity_pick$fit) |> arrange(p.value)
+glance(severity_pick$fit)
+```
+
+### Final hurdle models refit in tidymodels (automatic)
+
+The formulas come straight from what the selection kept, so nothing needs editing by hand when the data or `SELECTION_CRITERION` changes. The estimates match `detect_pick` and `severity_pick`; this only puts them in tidymodels form so `predict()` works.
+
+```{r}
+# Refit the detection survivors through parsnip; the formula is built from the selected terms
+detect_final_fit <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(make_formula("detected", detect_pick$terms), data = selection_data)
+
+tidy(detect_final_fit, exponentiate = TRUE) |> arrange(p.value)
+```
+
+```{r}
+severity_final_fit <- linear_reg() |>
+  set_engine("lm") |>
+  fit(make_formula("log_hazard", severity_pick$terms), data = severity_selection_data)
+
+tidy(severity_final_fit) |> arrange(p.value)
+```
+
+### Cross-check: LASSO in tidymodels
+
+LASSO adds a penalty that shrinks weak variables' coefficients to exactly zero, and whatever is left at zero is dropped. It stays inside tidymodels. Predictors are normalized so the penalty treats them fairly, so the estimates are not directly comparable to a plain `lm`/`glm`, and LASSO gives no p-values. It also drops individual dummy columns, not whole variables, and `n_hex_ids` is not protected here.
+
+```{r}
+# Same predictors as Part 1; normalize is required so the penalty treats all variables fairly
+detect_recipe_lasso <- recipe(
+  make_formula("detected", hurdle_terms),
+  data = hurdle_data
+) |>
+  step_log(min_distance_to_site_m, offset = 1) |>
+  step_other(system_short, threshold = 0.05) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors())
+```
+
+```{r}
+# penalty = tune() lets cross-validation pick how aggressively to drop; mixture = 1 means LASSO
+detect_lasso_wf <- workflow() |>
+  add_recipe(detect_recipe_lasso) |>
+  add_model(logistic_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet"))
+
+set.seed(123)
+detect_folds <- vfold_cv(hurdle_data, v = 10, strata = detected)
+
+detect_tuned <- tune_grid(
+  detect_lasso_wf,
+  resamples = detect_folds,
+  grid      = grid_regular(penalty(range = c(-4, -0.5)), levels = 20),
+  metrics   = metric_set(roc_auc)
+)
+```
+
+```{r}
+# Simplest model (largest penalty) within one standard error of the best
+detect_best <- select_by_one_std_err(detect_tuned, desc(penalty), metric = "roc_auc")
+
+detect_lasso_fit <- finalize_workflow(detect_lasso_wf, detect_best) |>
+  fit(data = hurdle_data)
+
+# Variables with a nonzero estimate survived; zeros were dropped
+tidy(detect_lasso_fit) |> filter(estimate != 0)
+```
+
+```{r}
+# Severity LASSO on detected systems only (severity_data defined in Part 2)
+severity_recipe_lasso <- recipe(
+  make_formula("log_hazard", hurdle_terms),
+  data = severity_data
+) |>
+  step_log(min_distance_to_site_m, offset = 1) |>
+  step_other(system_short, threshold = 0.05) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+severity_lasso_wf <- workflow() |>
+  add_recipe(severity_recipe_lasso) |>
+  add_model(linear_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet"))
+
+set.seed(123)
+severity_folds <- vfold_cv(severity_data, v = 5)
+
+severity_tuned <- tune_grid(
+  severity_lasso_wf,
+  resamples = severity_folds,
+  grid      = grid_regular(penalty(range = c(-4, -0.5)), levels = 20),
+  metrics   = metric_set(rmse)
+)
+```
+
+```{r}
+severity_best <- select_by_one_std_err(severity_tuned, desc(penalty), metric = "rmse")
+
+severity_lasso_fit <- finalize_workflow(severity_lasso_wf, severity_best) |>
+  fit(data = severity_data)
+
+# Variables with a nonzero estimate survived; zeros were dropped
+tidy(severity_lasso_fit) |> filter(estimate != 0)
+```
+
+## Model Comparison: Baseline vs. Tweedie vs. Hurdle
+
+**Procedure**
+
+1. Refit the baseline log-linear model on the same systems the extended models use.
+2. Turn each model's output into a predicted Hazard Index on the original scale.
+3. Compare prediction error and average level side by side.
+
+**Key points**
+
+- AIC and BIC are only comparable between models with the same outcome and the same rows, so they are used to choose variables *within* each model, not to rank the three models against each other.
+- The baseline predicts `log(1 + max_hazard)`, so its predictions are converted back with `expm1()`; this tends to under-predict the average.
+- The hurdle prediction is the chance of detection times the expected Hazard Index among detected systems.
+- These errors are measured on the same data the models were selected on, so they are optimistic and are best read as a ranking, not as expected accuracy.
+
+```{r}
+# Baseline refit on the same systems as the extended models (log-log, distance only)
+baseline_same_rows <- lm(log_hazard ~ log_distance, data = selection_data)
+
+# Hurdle prediction = P(detected) x expected Hazard Index if detected
+hurdle_p_detect <- predict(detect_pick$fit, newdata = selection_data, type = "response")
+hurdle_severity <- expm1(predict(severity_pick$fit, newdata = selection_data))
+
+comparison_data <- bind_rows(
+  tibble(model = "Baseline log-linear",
+         observed  = selection_data$max_hazard,
+         predicted = expm1(fitted(baseline_same_rows))),
+  tibble(model = "Zero-inflated Tweedie",
+         observed  = selection_data$max_hazard,
+         predicted = as.numeric(predict(tweedie_pick$fit, newdata = selection_data, type = "response"))),
+  tibble(model = "Hurdle",
+         observed  = selection_data$max_hazard,
+         predicted = hurdle_p_detect * hurdle_severity)
+)
+
+# rmse and mae on the raw Hazard Index scale; mean_predicted should be close to mean_observed
+comparison_data |>
+  group_by(model) |>
+  summarise(
+    n_systems      = n(),
+    rmse           = round(sqrt(mean((observed - predicted)^2)), 3),
+    mae            = round(mean(abs(observed - predicted)), 3),
+    mean_predicted = round(mean(predicted), 3),
+    mean_observed  = round(mean(observed), 3),
+    .groups = "drop"
+  )
+```
+
+### Do AIC and BIC agree?
+
+```{r}
+# Variables kept by each criterion in every model; agreement between AIC and BIC marks the strongest findings
+bind_rows(
+  selection_summary(tweedie_sel)  |> mutate(model = "Zero-inflated Tweedie"),
+  selection_summary(detect_sel)   |> mutate(model = "Hurdle: detection"),
+  selection_summary(severity_sel) |> mutate(model = "Hurdle: severity")
+) |>
+  select(model, criterion, terms_kept, n_terms_kept) |>
+  arrange(model, criterion)
+```
+
+A variable that appears under both AIC and BIC is the most reliable finding. A variable kept only by AIC (for example `log_ksat`) is supported but not confirmed, and should be reported as suggestive. If BIC keeps only `n_hex_ids` for severity, that means the few detected systems cannot support more than that, not that nothing matters; report the AIC result for severity as exploratory.
+
+### Reading the results
+
+- Compare the variables that survive AIC, BIC and LASSO. Variables that survive all of them are the most trustworthy.
+- Detection and severity can have different important variables. For example, distance might matter for whether PFAS shows up but not for how high it gets.
+- Check which soil variables survive selection and whether their direction matches the soil exploration. A soil variable that is dropped adds no information beyond the variables that stayed.
+- AIC and BIC are only comparable between models with the same outcome and rows, so use them to choose variables within a model. Across the baseline, Tweedie and hurdle models, use the prediction-error table above.
+
+## Spatial Check: Do Nearby Systems Share Leftover Error?
+
+Nearby water systems draw from the same PFAS sites and ground, so a model can leave residuals that are clustered on the map. **Moran's I** measures that clustering in the residuals of each final model.
+
+**Procedure**
+
+1. Give each system one coordinate (the average of its sampling locations).
+2. Link every system to its 5 nearest neighbours.
+3. Test the residuals of the final Tweedie, detection and severity models for clustering.
+
+**Key points**
+
+- Moran's I near 0 with a large p-value means no leftover clustering, so the standard models are adequate on this point.
+- A positive, significant value means neighbouring systems have similar errors; the next step would be a spatial smooth or a spatial error model.
+- This chunk only runs if the `spdep` package is installed (`install.packages("spdep")`).
+
+```{r}
+#| eval: !expr requireNamespace("spdep", quietly = TRUE)
+
+# One coordinate per system: the mean of its sampling locations in the projected CRS (meters)
+system_xy <- water_locations_proj |>
+  left_join(public_water1 |> distinct(hex_id, system_name), by = "hex_id") |>
+  mutate(x = st_coordinates(geometry)[, 1], y = st_coordinates(geometry)[, 2]) |>
+  st_drop_geometry() |>
+  group_by(system_name) |>
+  summarise(x = mean(x), y = mean(y), .groups = "drop")
+
+# Moran's I of a residual vector, using each system's 5 nearest neighbours
+morans_i <- function(resid, data, label) {
+  xy <- data |> select(system_name) |> left_join(system_xy, by = "system_name")
+  lw <- spdep::nb2listw(spdep::knn2nb(spdep::knearneigh(as.matrix(xy[, c("x", "y")]), k = 5)), style = "W")
+  mt <- spdep::moran.test(as.numeric(resid), lw)
+  tibble(model = label, n_systems = length(resid),
+         morans_i = round(unname(mt$estimate[1]), 3), p_value = signif(mt$p.value, 3))
+}
+
+bind_rows(
+  morans_i(residuals(tweedie_pick$fit, type = "pearson"), selection_data,          "Zero-inflated Tweedie"),
+  morans_i(residuals(detect_pick$fit,  type = "pearson"), selection_data,          "Hurdle: detection"),
+  morans_i(residuals(severity_pick$fit),                  severity_selection_data, "Hurdle: severity")
+)
+```
+
+## Conclusions, Limits and Next Steps
+
+**How to read the results**
+
+- **Baseline** shows how little distance alone explains; it is the reference point.
+- **Tweedie and hurdle** show whether handling the zeros properly, and adding aquifer, soil and system type, explains more. The comparison table gives the prediction error side by side.
+- **Selection tables** show which variables each model keeps under AIC and BIC; variables kept by both criteria and by LASSO are the most trustworthy.
+- **Pathway section** shows where the effects come from: distance, then aquifer and soil as modifiers.
+
+**Limits to keep in mind**
+
+- Only about 213 systems have a detection and there are now many candidate variables (about 17 terms), so overfitting is a real risk; the automatic rule therefore uses BIC, and variables kept only by AIC are suggestive.
+- Soil values are read at one location per system and numeric soil terms with missing values were filled with the median, so small soil effects should not be over-interpreted.
+- Soil permeability describes the top 100 cm at the water location, while wells often draw from deeper deposits.
+- Aquifer and soil are measured at the water location, not at the PFAS site.
+- Systems near the same sites are not fully independent, so p-values are a guide, not proof.
+- Prediction errors in the comparison table are measured on the same data used for selection, so they are optimistic.
+
+**Next steps**
+
+1. If the spatial check shows clustering, add a spatial smooth (a `mgcv` model) or a spatial error model.
+2. If the full Tweedie model struggles to converge with this many soil variables, set `TWEEDIE_ZI <- FALSE` or screen the soil variables with the hurdle detection model first.
+3. Resolve any locations with a missing system name.
+4. Validate the final model on held-out systems instead of in-sample error.
